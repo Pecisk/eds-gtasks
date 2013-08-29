@@ -60,6 +60,10 @@
 #define GOOGLE_CONTACTS_HOST		"www.google.com"
 #define GOOGLE_CONTACTS_RESOURCE_ID	"Contacts"
 
+/* Tasks Configuration Details */
+#define GOOGLE_TASKS_BACKEND_NAME	"google"
+#define GOOGLE_TASKS_RESOURCE_ID	"Tasks"
+
 typedef struct _EGoogleBackend EGoogleBackend;
 typedef struct _EGoogleBackendClass EGoogleBackendClass;
 
@@ -234,6 +238,58 @@ google_backend_add_calendar (ECollectionBackend *backend)
 			E_SOURCE_ALARMS (extension), today);
 		g_free (today);
 	}
+
+	server = e_collection_backend_ref_server (backend);
+	e_source_registry_server_add_source (server, source);
+	g_object_unref (server);
+
+	g_object_unref (source);
+}
+
+static void
+google_backend_add_tasks (ECollectionBackend *backend)
+{
+	ESource *source;
+	ESource *collection_source;
+	ESourceRegistryServer *server;
+	ESourceExtension *extension;
+	ESourceCollection *collection_extension;
+	const gchar *backend_name;
+	const gchar *extension_name;
+	const gchar *resource_id;
+
+	collection_source = e_backend_get_source (E_BACKEND (backend));
+
+	resource_id = GOOGLE_TASKS_RESOURCE_ID;
+	source = e_collection_backend_new_child (backend, resource_id);
+	e_source_set_display_name (source, _("Tasks"));
+
+	collection_extension = e_source_get_extension (
+		collection_source, E_SOURCE_EXTENSION_COLLECTION);
+
+	/* Configure the tasks source. */
+
+	backend_name = GOOGLE_TASKS_BACKEND_NAME;
+
+	extension_name = E_SOURCE_EXTENSION_TASK_LIST;
+	extension = e_source_get_extension (source, extension_name);
+
+	e_source_backend_set_backend_name (
+		E_SOURCE_BACKEND (extension), backend_name);
+
+	extension_name = E_SOURCE_EXTENSION_AUTHENTICATION;
+	extension = e_source_get_extension (source, extension_name);
+
+	g_object_bind_property (
+		collection_extension, "identity",
+		extension, "user",
+		G_BINDING_SYNC_CREATE);
+
+	extension_name = E_SOURCE_EXTENSION_SECURITY;
+	extension = e_source_get_extension (source, extension_name);
+
+	e_source_security_set_secure (
+		E_SOURCE_SECURITY (extension), TRUE);
 
 	server = e_collection_backend_ref_server (backend);
 	e_source_registry_server_add_source (server, source);
