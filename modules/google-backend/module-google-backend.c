@@ -61,7 +61,7 @@
 #define GOOGLE_CONTACTS_RESOURCE_ID	"Contacts"
 
 /* Tasks Configuration Details */
-#define GOOGLE_TASKS_BACKEND_NAME	"google"
+#define GOOGLE_TASKS_BACKEND_NAME	"gtasks"
 #define GOOGLE_TASKS_RESOURCE_ID	"Tasks"
 
 typedef struct _EGoogleBackend EGoogleBackend;

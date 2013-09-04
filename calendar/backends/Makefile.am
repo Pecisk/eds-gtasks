@@ -4,6 +4,6 @@ else
 WEATHER_SUBDIR =
 endif
 
-SUBDIRS = file http contacts $(WEATHER_SUBDIR) caldav
+SUBDIRS = file http contacts $(WEATHER_SUBDIR) caldav gtasks
 
 -include $(top_srcdir)/git.mk
