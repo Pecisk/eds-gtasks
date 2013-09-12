@@ -2056,13 +2056,14 @@ get_usermail (ECalBackend *backend)
 /* ********** ECalBackendSync virtual function implementation *************  */
 
 static gchar *
-caldav_get_backend_property (ECalBackend *backend,
+gtasks_get_backend_property (ECalBackend *backend,
                              const gchar *prop_name)
 {
+	/* FIXME what properties I need to return */
 	g_return_val_if_fail (prop_name != NULL, FALSE);
 
 	if (g_str_equal (prop_name, CLIENT_BACKEND_PROPERTY_CAPABILITIES)) {
-		ESourceWebdav *extension;
+		ESourceGTasks *extension;
 		ESource *source;
 		GString *caps;
 		gchar *usermail;
@@ -2077,18 +2078,6 @@ caldav_get_backend_property (ECalBackend *backend,
 		if (!usermail || !*usermail)
 			g_string_append (caps, "," CAL_STATIC_CAPABILITY_NO_EMAIL_ALARMS);
 		g_free (usermail);
-
-		source = e_backend_get_source (E_BACKEND (backend));
-
-		extension_name = E_SOURCE_EXTENSION_WEBDAV_BACKEND;
-		extension = e_source_get_extension (source, extension_name);
-
-		if (e_source_webdav_get_calendar_auto_schedule (extension)) {
-			g_string_append (
-				caps,
-				"," CAL_STATIC_CAPABILITY_CREATE_MESSAGES
-				"," CAL_STATIC_CAPABILITY_SAVE_SCHEDULES);
-		}
 
 		return g_string_free (caps, FALSE);
 
@@ -2125,7 +2114,7 @@ caldav_get_backend_property (ECalBackend *backend,
 	}
 
 	/* Chain up to parent's get_backend_property() method. */
-	return E_CAL_BACKEND_CLASS (e_cal_backend_caldav_parent_class)->
+	return E_CAL_BACKEND_CLASS (e_cal_backend_gtasks_parent_class)->
 		get_backend_property (backend, prop_name);
 }
 
@@ -2188,12 +2177,12 @@ proxy_settings_changed (EProxy *proxy,
 }
 
 static gboolean
-initialize_backend (ECalBackendCalDAV *cbdav,
+initialize_backend (ECalBackendGTasks *cbgtasks,
                     GError **perror)
 {
 	ESourceAuthentication    *auth_extension;
 	ESourceOffline           *offline_extension;
-	ESourceWebdav            *webdav_extension;
+	ESourceGTasks            *webdav_extension;
 	ECalBackend              *backend;
 	SoupURI                  *soup_uri;
 	ESource                  *source;
@@ -2201,7 +2190,7 @@ initialize_backend (ECalBackendCalDAV *cbdav,
 	const gchar              *cache_dir;
 	const gchar              *extension_name;
 
-	backend = E_CAL_BACKEND (cbdav);
+	backend = E_CAL_BACKEND (cbgtasks);
 	cache_dir = e_cal_backend_get_cache_dir (backend);
 	source = e_backend_get_source (E_BACKEND (backend));
 
@@ -2211,15 +2200,15 @@ initialize_backend (ECalBackendCalDAV *cbdav,
 	extension_name = E_SOURCE_EXTENSION_OFFLINE;
 	offline_extension = e_source_get_extension (source, extension_name);
 
-	extension_name = E_SOURCE_EXTENSION_WEBDAV_BACKEND;
+	extension_name = E_SOURCE_EXTENSION_GTASKS_BACKEND;
 	webdav_extension = e_source_get_extension (source, extension_name);
 
 	if (!g_signal_handler_find (G_OBJECT (source), G_SIGNAL_MATCH_FUNC | G_SIGNAL_MATCH_DATA, 0, 0, NULL, caldav_source_changed_cb, cbdav))
 		g_signal_connect (G_OBJECT (source), "changed", G_CALLBACK (caldav_source_changed_cb), cbdav);
 
-	cbdav->priv->do_offline = e_source_offline_get_stay_synchronized (offline_extension);
+	cbgtasks->priv->do_offline = e_source_offline_get_stay_synchronized (offline_extension);
 
-	cbdav->priv->auth_required = e_source_authentication_required (auth_extension);
+	cbgtasks->priv->auth_required = e_source_authentication_required (auth_extension);
 
 	soup_uri = e_source_webdav_dup_soup_uri (webdav_extension);
 
@@ -2354,38 +2343,38 @@ open_calendar (ECalBackendCalDAV *cbdav,
 }
 
 static void
-caldav_do_open (ECalBackendSync *backend,
+gtasks_do_open (ECalBackendSync *backend,
                 EDataCal *cal,
                 GCancellable *cancellable,
                 gboolean only_if_exists,
                 GError **perror)
 {
-	ECalBackendCalDAV        *cbdav;
+	ECalBackendCalGTasks        *cbgtasks;
 	gboolean online;
 
-	cbdav = E_CAL_BACKEND_CALDAV (backend);
+	cbgtasks = E_CAL_BACKEND_GTASKS (backend);
 
-	g_mutex_lock (&cbdav->priv->busy_lock);
+	g_mutex_lock (&cbgtasks->priv->busy_lock);
 
 	/* let it decide the 'getctag' extension availability again */
-	cbdav->priv->ctag_supported = TRUE;
+	cbgtasks->priv->ctag_supported = TRUE;
 
-	if (!cbdav->priv->loaded && !initialize_backend (cbdav, perror)) {
-		g_mutex_unlock (&cbdav->priv->busy_lock);
+	if (!cbgtasks->priv->loaded && !initialize_backend (cbgtasks, perror)) {
+		g_mutex_unlock (&cbgtasks->priv->busy_lock);
 		return;
 	}
 
 	online = e_backend_get_online (E_BACKEND (backend));
 
-	if (!cbdav->priv->do_offline && !online) {
-		g_mutex_unlock (&cbdav->priv->busy_lock);
+	if (!cbgtasks->priv->do_offline && !online) {
+		g_mutex_unlock (&cbgtasks->priv->busy_lock);
 		g_propagate_error (perror, EDC_ERROR (RepositoryOffline));
 		return;
 	}
 
-	cbdav->priv->loaded = TRUE;
-	cbdav->priv->opened = TRUE;
-	cbdav->priv->is_google = FALSE;
+	cbgtasks->priv->loaded = TRUE;
+	cbgtasks->priv->opened = TRUE;
+	cbgtasks->priv->is_google = FALSE;
 
 	if (online) {
 		GError *local_error = NULL;
@@ -2402,10 +2391,10 @@ caldav_do_open (ECalBackendSync *backend,
 			g_propagate_error (perror, local_error);
 
 	} else {
-		e_cal_backend_set_writable (E_CAL_BACKEND (cbdav), FALSE);
+		e_cal_backend_set_writable (E_CAL_BACKEND (cbgtasks), FALSE);
 	}
 
-	g_mutex_unlock (&cbdav->priv->busy_lock);
+	g_mutex_unlock (&cbgtasks->priv->busy_lock);
 }
 
 static void
