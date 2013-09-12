@@ -2349,7 +2349,7 @@ gtasks_do_open (ECalBackendSync *backend,
                 gboolean only_if_exists,
                 GError **perror)
 {
-	ECalBackendCalGTasks        *cbgtasks;
+	ECalBackendCalGTasks *cbgtasks;
 	gboolean online;
 
 	cbgtasks = E_CAL_BACKEND_GTASKS (backend);
@@ -2379,10 +2379,11 @@ gtasks_do_open (ECalBackendSync *backend,
 	if (online) {
 		GError *local_error = NULL;
 
-		open_calendar (cbdav, cancellable, &local_error);
-
+		//open_calendar (cbdav, cancellable, &local_error);
+		/* FIXME create authorizer and cache how it's done in open calendar*/
 		if (g_error_matches (local_error, E_DATA_CAL_ERROR, AuthenticationRequired) || g_error_matches (local_error, E_DATA_CAL_ERROR, AuthenticationFailed)) {
 			g_clear_error (&local_error);
+			/* FIXME what is caldav_authenticate */
 			caldav_authenticate (
 				cbdav, FALSE, cancellable, perror);
 		}
