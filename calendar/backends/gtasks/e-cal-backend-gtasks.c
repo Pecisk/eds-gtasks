@@ -30,6 +30,8 @@
 #include <json-glib/json-glib.h>
 
 #include "e-cal-backend-gtasks.h"
+#include <gdata/gdata.h>
+#include <goa/goa.h>
 
 #define d(x)
 
@@ -108,12 +110,19 @@ struct _ECalBackendGTasksPrivate {
 	 * The proper solution should be to subclass whole backend and change only
 	 * necessary parts in it, but this will give us more freedom, as also direct
 	 * caldav calendars can profit from this. */
-	gboolean is_google;
+	//gboolean is_google;
 
 	/* set to true if thread for ESource::changed is invoked */
 	gboolean updating_source;
 
 	guint refresh_id;
+	
+	/* GOA/libgdata stuff */
+	GoaClient *client;
+	GoaObject *object;
+	GDataGoaAuthorizer *authorizer;
+	GDataTasksService *service;
+	
 };
 
 /* Forward Declarations */
@@ -2182,7 +2191,7 @@ initialize_backend (ECalBackendGTasks *cbgtasks,
 {
 	ESourceAuthentication    *auth_extension;
 	ESourceOffline           *offline_extension;
-	ESourceGTasks            *webdav_extension;
+	ESourceGTasks            *gtasks_extension;
 	ECalBackend              *backend;
 	SoupURI                  *soup_uri;
 	ESource                  *source;
@@ -2203,72 +2212,13 @@ initialize_backend (ECalBackendGTasks *cbgtasks,
 	extension_name = E_SOURCE_EXTENSION_GTASKS_BACKEND;
 	webdav_extension = e_source_get_extension (source, extension_name);
 
-	if (!g_signal_handler_find (G_OBJECT (source), G_SIGNAL_MATCH_FUNC | G_SIGNAL_MATCH_DATA, 0, 0, NULL, caldav_source_changed_cb, cbdav))
-		g_signal_connect (G_OBJECT (source), "changed", G_CALLBACK (caldav_source_changed_cb), cbdav);
+	/* FIXME we don't it as we don't have source changed?? */
+	//if (!g_signal_handler_find (G_OBJECT (source), G_SIGNAL_MATCH_FUNC | G_SIGNAL_MATCH_DATA, 0, 0, NULL, caldav_source_changed_cb, cbdav))
+	//	g_signal_connect (G_OBJECT (source), "changed", G_CALLBACK (caldav_source_changed_cb), cbdav);
 
 	cbgtasks->priv->do_offline = e_source_offline_get_stay_synchronized (offline_extension);
 
 	cbgtasks->priv->auth_required = e_source_authentication_required (auth_extension);
-
-	soup_uri = e_source_webdav_dup_soup_uri (webdav_extension);
-
-	/* properly encode uri */
-	if (soup_uri != NULL && soup_uri->path != NULL) {
-		gchar *tmp, *path;
-
-		if (strchr (soup_uri->path, '%')) {
-			/* If path contains anything already encoded, then
-			 * decode it first, thus it'll be managed properly.
-			 * For example, the '#' in a path is in URI shown as
-			 * %23 and not doing this decode makes it being like
-			 * %2523, which is not what is wanted here. */
-			tmp = soup_uri_decode (soup_uri->path);
-			soup_uri_set_path (soup_uri, tmp);
-			g_free (tmp);
-		}
-
-		tmp = soup_uri_encode (soup_uri->path, NULL);
-		path = soup_uri_normalize (tmp, "/");
-
-		soup_uri_set_path (soup_uri, path);
-
-		g_free (tmp);
-		g_free (path);
-	}
-
-	g_signal_handlers_block_by_func (cbdav->priv->proxy, proxy_settings_changed, cbdav);
-
-	g_free (cbdav->priv->uri);
-	cbdav->priv->uri = soup_uri_to_string (soup_uri, FALSE);
-
-	soup_uri_free (soup_uri);
-
-	if (!cbdav->priv->uri)
-		g_signal_handlers_unblock_by_func (cbdav->priv->proxy, proxy_settings_changed, cbdav);
-	g_return_val_if_fail (cbdav->priv->uri != NULL, FALSE);
-
-	/* remove trailing slashes... */
-	if (cbdav->priv->uri != NULL) {
-		len = strlen (cbdav->priv->uri);
-		while (len--) {
-			if (cbdav->priv->uri[len] == '/') {
-				cbdav->priv->uri[len] = '\0';
-			} else {
-				break;
-			}
-		}
-	}
-
-	/* ...and append exactly one slash */
-	if (cbdav->priv->uri && *cbdav->priv->uri) {
-		gchar *tmp = cbdav->priv->uri;
-
-		cbdav->priv->uri = g_strconcat (cbdav->priv->uri, "/", NULL);
-
-		g_free (tmp);
-	}
-
-	g_signal_handlers_unblock_by_func (cbdav->priv->proxy, proxy_settings_changed, cbdav);
 
 	if (cbdav->priv->store == NULL) {
 		/* remove the old cache while migrating to ECalBackendStore */
@@ -2294,6 +2244,7 @@ initialize_backend (ECalBackendGTasks *cbgtasks,
 		g_thread_unref (slave);
 	}
 
+	/* FIXME write my own refresh */
 	if (cbdav->priv->refresh_id == 0) {
 		cbdav->priv->refresh_id = e_source_refresh_add_timeout (
 			source, NULL, time_to_refresh_caldav_calendar_cb, cbdav, NULL);
@@ -2303,7 +2254,7 @@ initialize_backend (ECalBackendGTasks *cbgtasks,
 }
 
 static gboolean
-open_calendar (ECalBackendCalDAV *cbdav,
+open_tasks (ECalBackendGTasks *cbgtasks,
                GCancellable *cancellable,
                GError **error)
 {
@@ -2314,16 +2265,28 @@ open_calendar (ECalBackendCalDAV *cbdav,
 	g_return_val_if_fail (cbdav != NULL, FALSE);
 
 	/* set forward proxy */
-	proxy_settings_changed (cbdav->priv->proxy, cbdav->priv);
+	//proxy_settings_changed (cbdav->priv->proxy, cbdav->priv);
 
-	success = caldav_server_open_calendar (
-		cbdav, &server_unreachable, cancellable, &local_error);
+	//success = caldav_server_open_calendar (
+	//	cbdav, &server_unreachable, cancellable, &local_error);
 
+	/* FIXME all those objects in ->priv */
+	cbgtasks->priv->client = goa_client_new_sync (NULL, &local_error);
+	/* FIXME first - shouldn't be this abstracted and second - how to get same effect as lookup_by_id */
+	cbgtasks->priv->object = goa_client_lookup_by_id (client, "account_1377173897" /* Get this from seahorse */);
+	cbgtasks->priv->authorizer = gdata_goa_authorizer_new (object);
+	cbgtasks->priv->service = GDATA_SERVICE (gdata_tasks_service_new (GDATA_AUTHORIZER (authorizer)));
+	
+	/* FIXME how to detect problems with goa/libgdata */
+	success = TRUE:
+	server_unreachable = FALSE;
+	
 	if (success) {
-		update_slave_cmd (cbdav->priv, SLAVE_SHOULD_WORK);
-		g_cond_signal (&cbdav->priv->cond);
+		update_slave_cmd (cbgtasks->priv, SLAVE_SHOULD_WORK);
+		g_cond_signal (&cbgtasks->priv->cond);
 
-		cbdav->priv->is_google = is_google_uri (cbdav->priv->uri);
+		// FIXME remove is_google thingy - we ain't webdav
+		//cbdav->priv->is_google = is_google_uri (cbdav->priv->uri);
 	} else if (server_unreachable) {
 		cbdav->priv->opened = FALSE;
 		e_cal_backend_set_writable (E_CAL_BACKEND (cbdav), FALSE);
@@ -2374,13 +2337,14 @@ gtasks_do_open (ECalBackendSync *backend,
 
 	cbgtasks->priv->loaded = TRUE;
 	cbgtasks->priv->opened = TRUE;
-	cbgtasks->priv->is_google = FALSE;
+	//cbgtasks->priv->is_google = FALSE;
 
 	if (online) {
 		GError *local_error = NULL;
 
-		//open_calendar (cbdav, cancellable, &local_error);
+		open_tasks (cbdav, cancellable, &local_error);
 		/* FIXME create authorizer and cache how it's done in open calendar*/
+		// FIXME how we get which account we need? How do we get account id?
 		if (g_error_matches (local_error, E_DATA_CAL_ERROR, AuthenticationRequired) || g_error_matches (local_error, E_DATA_CAL_ERROR, AuthenticationFailed)) {
 			g_clear_error (&local_error);
 			/* FIXME what is caldav_authenticate */
