@@ -66,7 +66,7 @@ struct _ECalBackendGTasksPrivate {
 	/* should we sync for offline mode? */
 	gboolean do_offline;
 
-	/* TRUE after caldav_open */
+	/* TRUE after gtasks_open */
 	gboolean loaded;
 	/* TRUE when server reachable */
 	gboolean opened;
@@ -84,33 +84,13 @@ struct _ECalBackendGTasksPrivate {
 	const GThread *synch_slave; /* just for a reference, whether thread exists */
 	SlaveCommand slave_cmd;
 	gboolean slave_busy; /* whether is slave working */
-
-	/* The main soup session  */
-	SoupSession *session;
-	EProxy *proxy;
-
-	/* clandar uri */
-	gchar *uri;
-
-	/* Authentication info */
-	gchar *password;
-	gboolean auth_required;
+	
+	// FIXME removed all soup, proxy and uri
+	// FIXME auth variables removed
 
 	/* support for 'getctag' extension */
 	gboolean ctag_supported;
 	gchar *ctag_to_store;
-
-	/* TRUE when 'calendar-schedule' supported on the server */
-	gboolean calendar_schedule;
-	/* with 'calendar-schedule' supported, here's an outbox url
-	 * for queries of free/busy information */
-	gchar *schedule_outbox_url;
-
-	/* "Temporary hack" to indicate it's talking to a google calendar.
-	 * The proper solution should be to subclass whole backend and change only
-	 * necessary parts in it, but this will give us more freedom, as also direct
-	 * caldav calendars can profit from this. */
-	//gboolean is_google;
 
 	/* set to true if thread for ESource::changed is invoked */
 	gboolean updating_source;
@@ -221,49 +201,8 @@ caldav_debug_init_once (gpointer data)
 	return NULL;
 }
 
-static void
-caldav_debug_init (void)
-{
-	static GOnce debug_once = G_ONCE_INIT;
-
-	g_once (
-		&debug_once,
-		caldav_debug_init_once,
-		NULL);
-}
-
-static gboolean
-caldav_debug_show (const gchar *component)
-{
-	if (G_UNLIKELY (caldav_debug_all)) {
-		return TRUE;
-	} else if (G_UNLIKELY (caldav_debug_table != NULL) &&
-		   g_hash_table_lookup (caldav_debug_table, component)) {
-		return TRUE;
-	}
-
-	return FALSE;
-}
-
 #define DEBUG_MAX_BODY_SIZE (100 * 1024 * 1024)
 
-static void
-caldav_debug_setup (SoupSession *session)
-{
-	SoupLogger *logger;
-	SoupLoggerLogLevel level;
-
-	if (caldav_debug_show (DEBUG_MESSAGE_BODY))
-		level = SOUP_LOGGER_LOG_BODY;
-	else if (caldav_debug_show (DEBUG_MESSAGE_HEADER))
-		level = SOUP_LOGGER_LOG_HEADERS;
-	else
-		level = SOUP_LOGGER_LOG_MINIMAL;
-
-	logger = soup_logger_new (level, DEBUG_MAX_BODY_SIZE);
-	soup_session_add_feature (session, SOUP_SESSION_FEATURE (logger));
-	g_object_unref (logger);
-}
 
 /* TODO Do not replicate this in every backend */
 static icaltimezone *
@@ -451,36 +390,6 @@ ecalcomp_get_etag (ECalComponent *comp)
 	return str;
 }
 
-/*typedef enum {
- *
-	/ * object is in synch,
-	 * now isnt that ironic? :) * /
-	ECALCOMP_IN_SYNCH = 0,
- *
-	/ * local changes * /
-	ECALCOMP_LOCALLY_CREATED,
-	ECALCOMP_LOCALLY_DELETED,
-	ECALCOMP_LOCALLY_MODIFIED
- *
-} ECalCompSyncState;
- *
-/ * oos = out of synch * /
-static void
-ecalcomp_set_synch_state (ECalComponent *comp,
- *                        ECalCompSyncState state)
-{
-	icalcomponent *icomp;
-	gchar          *state_string;
- *
-	icomp = e_cal_component_get_icalcomponent (comp);
- *
-	state_string = g_strdup_printf ("%d", state);
- *
-	icomp_x_prop_set (icomp, X_E_CALDAV "ETAG", state_string);
- *
-	g_free (state_string);
-}*/
-
 static gchar *
 ecalcomp_gen_href (ECalComponent *comp)
 {
@@ -531,99 +440,21 @@ quote_etag (const gchar *etag)
 
 /* ************************************************************************* */
 
-static gboolean
-status_code_to_result (SoupMessage *message,
-                       ECalBackendCalDAV *cbdav,
-                       gboolean is_opening,
-                       GError **perror)
-{
-	ECalBackendCalDAVPrivate *priv;
-
-	g_return_val_if_fail (cbdav != NULL, FALSE);
-	g_return_val_if_fail (message != NULL, FALSE);
-
-	priv = cbdav->priv;
-
-	if (SOUP_STATUS_IS_SUCCESSFUL (message->status_code)) {
-		return TRUE;
-	}
-
-	if (perror && *perror)
-		return FALSE;
-
-	switch (message->status_code) {
-	case SOUP_STATUS_CANT_CONNECT:
-	case SOUP_STATUS_CANT_CONNECT_PROXY:
-		g_propagate_error (
-			perror,
-			e_data_cal_create_error_fmt (
-				OtherError,
-				_("Server is unreachable (%s)"),
-					message->reason_phrase && *message->reason_phrase ? message->reason_phrase :
-					(soup_status_get_phrase (message->status_code) ? soup_status_get_phrase (message->status_code) : _("Unknown error"))));
-		if (priv) {
-			priv->opened = FALSE;
-			e_cal_backend_set_writable (
-				E_CAL_BACKEND (cbdav), FALSE);
-		}
-		break;
-	case 404:
-		if (is_opening)
-			g_propagate_error (perror, EDC_ERROR (NoSuchCal));
-		else
-			g_propagate_error (perror, EDC_ERROR (ObjectNotFound));
-		break;
-
-	case 403:
-		g_propagate_error (perror, EDC_ERROR (AuthenticationFailed));
-		break;
-
-	case 401:
-		if (priv && priv->auth_required)
-			g_propagate_error (perror, EDC_ERROR (AuthenticationFailed));
-		else
-			g_propagate_error (perror, EDC_ERROR (AuthenticationRequired));
-		break;
-
-	case SOUP_STATUS_SSL_FAILED:
-		g_propagate_error (
-			perror,
-			e_data_cal_create_error_fmt ( OtherError,
-			_("Failed to connect to a server using SSL: %s"),
-			message->reason_phrase && *message->reason_phrase ? message->reason_phrase :
-			(soup_status_get_phrase (message->status_code) ? soup_status_get_phrase (message->status_code) : _("Unknown error"))));
-		break;
-
-	default:
-		d (g_debug ("CalDAV:%s: Unhandled status code %d\n", G_STRFUNC, status_code));
-		g_propagate_error (
-			perror,
-			e_data_cal_create_error_fmt (
-				OtherError,
-				_("Unexpected HTTP status code %d returned (%s)"),
-					message->status_code,
-					message->reason_phrase && *message->reason_phrase ? message->reason_phrase :
-					(soup_status_get_phrase (message->status_code) ? soup_status_get_phrase (message->status_code) : _("Unknown error"))));
-		break;
-	}
-
-	return FALSE;
-}
 
 /* !TS, call with lock held */
 static gboolean
-check_state (ECalBackendCalDAV *cbdav,
+check_state (ECalBackendGTasks *gtasks,
              gboolean *online,
              GError **perror)
 {
 	*online = FALSE;
 
-	if (!cbdav->priv->loaded) {
+	if (!gtasks->priv->loaded) {
 		g_propagate_error (perror, EDC_ERROR_EX (OtherError, _("CalDAV backend is not loaded yet")));
 		return FALSE;
 	}
 
-	if (!e_backend_get_online (E_BACKEND (cbdav))) {
+	if (!e_backend_get_online (E_BACKEND (gtasks))) {
 
 		if (!cbdav->priv->do_offline) {
 			g_propagate_error (perror, EDC_ERROR (RepositoryOffline));
@@ -650,7 +481,7 @@ struct _GTasksObject {
 };
 
 static void
-caldav_object_free (CalDAVObject *object,
+gtasks_object_free (GTasksObject *object,
                     gboolean free_object_itself)
 {
 	g_free (object->href);
@@ -1876,190 +1707,17 @@ synchronize_cache (ECalBackendCalDAV *cbdav,
 	g_free (sobjs);
 }
 
-static gboolean
-is_google_uri (const gchar *uri)
-{
-	SoupURI *suri;
-	gboolean res;
-
-	g_return_val_if_fail (uri != NULL, FALSE);
-
-	suri = soup_uri_new (uri);
-	g_return_val_if_fail (suri != NULL, FALSE);
-
-	res = suri->host && g_ascii_strcasecmp (suri->host, "www.google.com") == 0;
-
-	soup_uri_free (suri);
-
-	return res;
-}
-
 static void
-time_to_refresh_caldav_calendar_cb (ESource *source,
+time_to_refresh_gtasks_cb (ESource *source,
                                     gpointer user_data)
 {
-	ECalBackendCalDAV *cbdav = user_data;
+	ECalBackendCalGTasks *gtasks = user_data;
 
-	g_return_if_fail (E_IS_CAL_BACKEND_CALDAV (cbdav));
+	g_return_if_fail (E_IS_CAL_BACKEND_GTASKS (cbdav));
 
 	g_cond_signal (&cbdav->priv->cond);
 }
 
-/* ************************************************************************* */
-
-static gpointer
-caldav_synch_slave_loop (gpointer data)
-{
-	ECalBackendCalDAV *cbdav;
-	time_t now;
-	icaltimezone *utc = icaltimezone_get_utc_timezone ();
-	gboolean know_unreachable;
-
-	cbdav = E_CAL_BACKEND_CALDAV (data);
-
-	g_mutex_lock (&cbdav->priv->busy_lock);
-
-	know_unreachable = !cbdav->priv->opened;
-
-	while (cbdav->priv->slave_cmd != SLAVE_SHOULD_DIE) {
-		if (cbdav->priv->slave_cmd == SLAVE_SHOULD_SLEEP) {
-			/* just sleep until we get woken up again */
-			g_cond_wait (&cbdav->priv->cond, &cbdav->priv->busy_lock);
-
-			/* check if we should die, work or sleep again */
-			continue;
-		}
-
-		/* Ok here we go, do some real work
-		 * Synch it baby one more time ...
-		 */
-		cbdav->priv->slave_busy = TRUE;
-
-		if (!cbdav->priv->opened) {
-			gboolean server_unreachable = FALSE;
-			GError *local_error = NULL;
-
-			if (caldav_server_open_calendar (cbdav, &server_unreachable, NULL, &local_error)) {
-				cbdav->priv->opened = TRUE;
-				update_slave_cmd (cbdav->priv, SLAVE_SHOULD_WORK);
-				g_cond_signal (&cbdav->priv->cond);
-
-				cbdav->priv->is_google = is_google_uri (cbdav->priv->uri);
-				know_unreachable = FALSE;
-			} else if (local_error) {
-				cbdav->priv->opened = FALSE;
-				e_cal_backend_set_writable (
-					E_CAL_BACKEND (cbdav), FALSE);
-
-				if (!know_unreachable) {
-					gchar *msg;
-
-					know_unreachable = TRUE;
-
-					msg = g_strdup_printf (_("Server is unreachable, calendar is opened in read-only mode.\nError message: %s"), local_error->message);
-					e_cal_backend_notify_error (E_CAL_BACKEND (cbdav), msg);
-					g_free (msg);
-				}
-
-				g_clear_error (&local_error);
-			} else {
-				cbdav->priv->opened = FALSE;
-				e_cal_backend_set_writable (
-					E_CAL_BACKEND (cbdav), FALSE);
-				know_unreachable = TRUE;
-			}
-		}
-
-		if (cbdav->priv->opened) {
-			time (&now);
-			/* check for events in the month before/after today first,
-			 * to show user actual data as soon as possible */
-			synchronize_cache (cbdav, time_add_week_with_zone (now, -5, utc), time_add_week_with_zone (now, +5, utc));
-
-			if (cbdav->priv->slave_cmd != SLAVE_SHOULD_SLEEP) {
-				/* and then check for changes in a whole calendar */
-				synchronize_cache (cbdav, 0, 0);
-			}
-
-			if (caldav_debug_show (DEBUG_SERVER_ITEMS)) {
-				GSList *c_objs;
-
-				c_objs = e_cal_backend_store_get_components (cbdav->priv->store);
-
-				printf ("CalDAV - finished syncing with %d items in a cache\n", g_slist_length (c_objs)); fflush (stdout);
-
-				g_slist_foreach (c_objs, (GFunc) g_object_unref, NULL);
-				g_slist_free (c_objs);
-			}
-		}
-
-		cbdav->priv->slave_busy = FALSE;
-
-		/* puhh that was hard, get some rest :) */
-		g_cond_wait (&cbdav->priv->cond, &cbdav->priv->busy_lock);
-	}
-
-	cbdav->priv->synch_slave = NULL;
-
-	/* signal we are done */
-	g_cond_signal (&cbdav->priv->slave_gone_cond);
-
-	/* we got killed ... */
-	g_mutex_unlock (&cbdav->priv->busy_lock);
-	return NULL;
-}
-
-static gchar *
-maybe_append_email_domain (const gchar *username,
-                           const gchar *may_append)
-{
-	if (!username || !*username)
-		return NULL;
-
-	if (strchr (username, '@'))
-		return g_strdup (username);
-
-	return g_strconcat (username, may_append, NULL);
-}
-
-static gchar *
-get_usermail (ECalBackend *backend)
-{
-	ECalBackendCalDAV *cbdav;
-	ESource *source;
-	ESourceAuthentication *auth_extension;
-	ESourceWebdav *webdav_extension;
-	const gchar *extension_name;
-	gchar *usermail;
-	gchar *username;
-	gchar *res = NULL;
-
-	g_return_val_if_fail (backend != NULL, NULL);
-
-	source = e_backend_get_source (E_BACKEND (backend));
-
-	extension_name = E_SOURCE_EXTENSION_WEBDAV_BACKEND;
-	webdav_extension = e_source_get_extension (source, extension_name);
-
-	/* This will never return an empty string. */
-	usermail = e_source_webdav_dup_email_address (webdav_extension);
-
-	if (usermail != NULL)
-		return usermail;
-
-	cbdav = E_CAL_BACKEND_CALDAV (backend);
-
-	extension_name = E_SOURCE_EXTENSION_AUTHENTICATION;
-	auth_extension = e_source_get_extension (source, extension_name);
-	username = e_source_authentication_dup_user (auth_extension);
-
-	if (cbdav->priv && cbdav->priv->is_google)
-		res = maybe_append_email_domain (username, "@gmail.com");
-
-	g_free (username);
-
-	return res;
-}
 
 /* ************************************************************************* */
 /* ********** ECalBackendSync virtual function implementation *************  */
@@ -2128,7 +1786,7 @@ gtasks_get_backend_property (ECalBackend *backend,
 }
 
 static void
-caldav_shutdown (ECalBackend *backend)
+gtasks_shutdown (ECalBackend *backend)
 {
 	ECalBackendCalDAVPrivate *priv;
 	ESource *source;
@@ -2167,24 +1825,6 @@ caldav_shutdown (ECalBackend *backend)
 	g_mutex_unlock (&priv->busy_lock);
 }
 
-static void
-proxy_settings_changed (EProxy *proxy,
-                        gpointer user_data)
-{
-	SoupURI *proxy_uri = NULL;
-	ECalBackendCalDAVPrivate *priv = (ECalBackendCalDAVPrivate *) user_data;
-
-	if (!priv || !priv->uri || !priv->session)
-		return;
-
-	/* use proxy if necessary */
-	if (e_proxy_require_proxy_for_uri (proxy, priv->uri)) {
-		proxy_uri = e_proxy_peek_uri_for (proxy, priv->uri);
-	}
-
-	g_object_set (priv->session, SOUP_SESSION_PROXY_URI, proxy_uri, NULL);
-}
-
 static gboolean
 initialize_backend (ECalBackendGTasks *cbgtasks,
                     GError **perror)
@@ -2212,9 +1852,8 @@ initialize_backend (ECalBackendGTasks *cbgtasks,
 	extension_name = E_SOURCE_EXTENSION_GTASKS_BACKEND;
 	webdav_extension = e_source_get_extension (source, extension_name);
 
-	/* FIXME we don't it as we don't have source changed?? */
-	//if (!g_signal_handler_find (G_OBJECT (source), G_SIGNAL_MATCH_FUNC | G_SIGNAL_MATCH_DATA, 0, 0, NULL, caldav_source_changed_cb, cbdav))
-	//	g_signal_connect (G_OBJECT (source), "changed", G_CALLBACK (caldav_source_changed_cb), cbdav);
+	if (!g_signal_handler_find (G_OBJECT (source), G_SIGNAL_MATCH_FUNC | G_SIGNAL_MATCH_DATA, 0, 0, NULL, gtasks_source_changed_cb, cbdav))
+		g_signal_connect (G_OBJECT (source), "changed", G_CALLBACK (gtasks_source_changed_cb), gtasks);
 
 	cbgtasks->priv->do_offline = e_source_offline_get_stay_synchronized (offline_extension);
 
@@ -2247,7 +1886,7 @@ initialize_backend (ECalBackendGTasks *cbgtasks,
 	/* FIXME write my own refresh */
 	if (cbdav->priv->refresh_id == 0) {
 		cbdav->priv->refresh_id = e_source_refresh_add_timeout (
-			source, NULL, time_to_refresh_caldav_calendar_cb, cbdav, NULL);
+			source, NULL, time_to_refresh_gtasks_cb, cbdav, NULL);
 	}
 
 	return TRUE;
@@ -4202,18 +3841,19 @@ caldav_get_object_list (ECalBackendSync *backend,
 }
 
 static void
-caldav_start_view (ECalBackend *backend,
+gtasks_start_view (ECalBackend *backend,
                    EDataCalView *query)
 {
-	ECalBackendCalDAV        *cbdav;
+	ECalBackendGTasks *cbgtasks;
 	ECalBackendSExp	 *sexp;
 	ETimezoneCache *cache;
-	gboolean                  do_search;
-	GSList			 *list, *iter;
-	const gchar               *sexp_string;
+	gboolean do_search;
+	GSList *list, *iter;
+	const gchar *sexp_string;
 	time_t occur_start = -1, occur_end = -1;
 	gboolean prunning_by_time;
-	cbdav = E_CAL_BACKEND_CALDAV (backend);
+	
+	cbgtasks = E_CAL_BACKEND_GTASKS (backend);
 
 	sexp = e_data_cal_view_get_sexp (query);
 	sexp_string = e_cal_backend_sexp_text (sexp);
@@ -4250,272 +3890,85 @@ caldav_start_view (ECalBackend *backend,
 	e_data_cal_view_notify_complete (query, NULL /* Success */);
 }
 
+/* FIXME where it should be binded as callback */
 static void
-caldav_get_free_busy (ECalBackendSync *backend,
-                      EDataCal *cal,
-                      GCancellable *cancellable,
-                      const GSList *users,
-                      time_t start,
-                      time_t end,
-                      GSList **freebusy,
-                      GError **error)
-{
-	ECalBackendCalDAV *cbdav;
-	icalcomponent *icalcomp;
-	ECalComponent *comp;
-	ECalComponentDateTime dt;
-	ECalComponentOrganizer organizer = {NULL};
-	ESourceAuthentication *auth_extension;
-	ESource *source;
-	struct icaltimetype dtvalue;
-	icaltimezone *utc;
-	gchar *str;
-	const GSList *u;
-	GSList *attendees = NULL, *to_free = NULL;
-	const gchar *extension_name;
-	gchar *usermail;
-	GError *err = NULL;
-
-	cbdav = E_CAL_BACKEND_CALDAV (backend);
-
-	if (!cbdav->priv->calendar_schedule) {
-		g_propagate_error (error, EDC_ERROR_EX (OtherError, _("Calendar doesn't support Free/Busy")));
-		return;
-	}
-
-	if (!cbdav->priv->schedule_outbox_url) {
-		caldav_receive_schedule_outbox_url (cbdav, cancellable, error);
-		if (!cbdav->priv->schedule_outbox_url) {
-			cbdav->priv->calendar_schedule = FALSE;
-			if (error && !*error)
-				g_propagate_error (error, EDC_ERROR_EX (OtherError, _("Schedule outbox url not found")));
-			return;
-		}
-	}
-
-	comp = e_cal_component_new ();
-	e_cal_component_set_new_vtype (comp, E_CAL_COMPONENT_FREEBUSY);
-
-	str = e_cal_component_gen_uid ();
-	e_cal_component_set_uid (comp, str);
-	g_free (str);
-
-	utc = icaltimezone_get_utc_timezone ();
-	dt.value = &dtvalue;
-	dt.tzid = icaltimezone_get_tzid (utc);
-
-	dtvalue = icaltime_current_time_with_zone (utc);
-	e_cal_component_set_dtstamp (comp, &dtvalue);
-
-	dtvalue = icaltime_from_timet_with_zone (start, FALSE, utc);
-	e_cal_component_set_dtstart (comp, &dt);
-
-	dtvalue = icaltime_from_timet_with_zone (end, FALSE, utc);
-	e_cal_component_set_dtend (comp, &dt);
-
-	usermail = get_usermail (E_CAL_BACKEND (backend));
-	if (usermail != NULL && *usermail == '\0') {
-		g_free (usermail);
-		usermail = NULL;
-	}
-
-	source = e_backend_get_source (E_BACKEND (backend));
-	extension_name = E_SOURCE_EXTENSION_AUTHENTICATION;
-	auth_extension = e_source_get_extension (source, extension_name);
-
-	if (usermail == NULL)
-		usermail = e_source_authentication_dup_user (auth_extension);
-
-	organizer.value = g_strconcat ("mailto:", usermail, NULL);
-	e_cal_component_set_organizer (comp, &organizer);
-	g_free ((gchar *) organizer.value);
-
-	g_free (usermail);
-
-	for (u = users; u; u = u->next) {
-		ECalComponentAttendee *ca;
-		gchar *temp = g_strconcat ("mailto:", (const gchar *) u->data, NULL);
-
-		ca = g_new0 (ECalComponentAttendee, 1);
-
-		ca->value = temp;
-		ca->cutype = ICAL_CUTYPE_INDIVIDUAL;
-		ca->status = ICAL_PARTSTAT_NEEDSACTION;
-		ca->role = ICAL_ROLE_CHAIR;
-
-		to_free = g_slist_prepend (to_free, temp);
-		attendees = g_slist_append (attendees, ca);
-	}
-
-	e_cal_component_set_attendee_list (comp, attendees);
-
-	g_slist_foreach (attendees, (GFunc) g_free, NULL);
-	g_slist_free (attendees);
-
-	g_slist_foreach (to_free, (GFunc) g_free, NULL);
-	g_slist_free (to_free);
-
-	e_cal_component_abort_sequence (comp);
-
-	/* put the free/busy request to a VCALENDAR */
-	icalcomp = e_cal_util_new_top_level ();
-	icalcomponent_set_method (icalcomp, ICAL_METHOD_REQUEST);
-	icalcomponent_add_component (icalcomp, icalcomponent_new_clone (e_cal_component_get_icalcomponent (comp)));
-
-	str = icalcomponent_as_ical_string_r (icalcomp);
-
-	icalcomponent_free (icalcomp);
-	g_object_unref (comp);
-
-	caldav_post_freebusy (cbdav, cbdav->priv->schedule_outbox_url, &str, cancellable, &err);
-
-	if (!err) {
-		/* parse returned xml */
-		xmlDocPtr doc;
-
-		doc = xmlReadMemory (str, strlen (str), "response.xml", NULL, 0);
-		if (doc != NULL) {
-			xmlXPathContextPtr xpctx;
-			xmlXPathObjectPtr result;
-
-			xpctx = xmlXPathNewContext (doc);
-			xmlXPathRegisterNs (xpctx, (xmlChar *) "D", (xmlChar *) "DAV:");
-			xmlXPathRegisterNs (xpctx, (xmlChar *) "C", (xmlChar *) "urn:ietf:params:xml:ns:caldav");
-
-			result = xpath_eval (xpctx, "/C:schedule-response/C:response");
-
-			if (result == NULL || result->type != XPATH_NODESET) {
-				err = EDC_ERROR_EX (OtherError, _("Unexpected result in schedule-response"));
-			} else {
-				gint i, n;
-
-				n = xmlXPathNodeSetGetLength (result->nodesetval);
-				for (i = 0; i < n; i++) {
-					gchar *tmp;
-
-					tmp = xp_object_get_string (xpath_eval (xpctx, "string(/C:schedule-response/C:response[%d]/C:calendar-data)", i + 1));
-					if (tmp && *tmp) {
-						GSList *objects = NULL, *o;
-
-						icalcomp = icalparser_parse_string (tmp);
-						if (icalcomp)
-							extract_objects (icalcomp, ICAL_VFREEBUSY_COMPONENT, &objects, &err);
-						if (icalcomp && !err) {
-							for (o = objects; o; o = o->next) {
-								gchar *obj_str = icalcomponent_as_ical_string_r (o->data);
-
-								if (obj_str && *obj_str)
-									*freebusy = g_slist_append (*freebusy, obj_str);
-								else
-									g_free (obj_str);
-							}
-						}
-
-						g_slist_foreach (objects, (GFunc) icalcomponent_free, NULL);
-						g_slist_free (objects);
-
-						if (icalcomp)
-							icalcomponent_free (icalcomp);
-						if (err)
-							g_error_free (err);
-						err = NULL;
-					}
-
-					g_free (tmp);
-				}
-			}
-
-			if (result != NULL)
-				xmlXPathFreeObject (result);
-			xmlXPathFreeContext (xpctx);
-			xmlFreeDoc (doc);
-		}
-	}
-
-	g_free (str);
-
-	if (err)
-		g_propagate_error (error, err);
-}
-
-static void
-caldav_notify_online_cb (ECalBackend *backend,
+gtasks_notify_online_cb (ECalBackend *backend,
                          GParamSpec *pspec)
 {
-	ECalBackendCalDAV        *cbdav;
+	ECalBackendGTasks        *cbgtasks;
 	gboolean online;
 
-	cbdav = E_CAL_BACKEND_CALDAV (backend);
+	cbgtasks = E_CAL_BACKEND_GTASKS (backend);
 
-	/*g_mutex_lock (&cbdav->priv->busy_lock);*/
+	/*g_mutex_lock (&cbgtasks->priv->busy_lock);*/
 
 	online = e_backend_get_online (E_BACKEND (backend));
 
 	if (!cbdav->priv->loaded) {
-		/*g_mutex_unlock (&cbdav->priv->busy_lock);*/
+		/*g_mutex_unlock (&cbgtasks->priv->busy_lock);*/
 		return;
 	}
 
 	if (online) {
 		/* Wake up the slave thread */
-		update_slave_cmd (cbdav->priv, SLAVE_SHOULD_WORK);
-		g_cond_signal (&cbdav->priv->cond);
+		update_slave_cmd (cbgtasks->priv, SLAVE_SHOULD_WORK);
+		g_cond_signal (&cbgtasks->priv->cond);
 	} else {
-		soup_session_abort (cbdav->priv->session);
-		update_slave_cmd (cbdav->priv, SLAVE_SHOULD_SLEEP);
+		soup_session_abort (cbgtasks->priv->session);
+		update_slave_cmd (cbgtasks->priv, SLAVE_SHOULD_SLEEP);
 	}
 
-	/*g_mutex_unlock (&cbdav->priv->busy_lock);*/
+	/*g_mutex_unlock (&cbgtasks->priv->busy_lock);*/
 }
 
 static gpointer
-caldav_source_changed_thread (gpointer data)
+gtasks_source_changed_thread (gpointer data)
 {
-	ECalBackendCalDAV *cbdav = data;
+	ECalBackendGTasks *gtasks = data;
 	SlaveCommand old_slave_cmd;
 	gboolean old_slave_busy;
 
-	g_return_val_if_fail (cbdav != NULL, NULL);
+	g_return_val_if_fail (gtasks != NULL, NULL);
 
-	old_slave_cmd = cbdav->priv->slave_cmd;
-	old_slave_busy = cbdav->priv->slave_busy;
+	old_slave_cmd = gtasks->priv->slave_cmd;
+	old_slave_busy = gtasks->priv->slave_busy;
 	if (old_slave_busy) {
-		update_slave_cmd (cbdav->priv, SLAVE_SHOULD_SLEEP);
-		g_mutex_lock (&cbdav->priv->busy_lock);
+		update_slave_cmd (gtasks->priv, SLAVE_SHOULD_SLEEP);
+		g_mutex_lock (&gtasks->priv->busy_lock);
 	}
 
-	initialize_backend (cbdav, NULL);
+	initialize_backend (gtasks, NULL);
 
 	/* always wakeup thread, even when it was sleeping */
-	g_cond_signal (&cbdav->priv->cond);
+	g_cond_signal (&gtasks->priv->cond);
 
 	if (old_slave_busy) {
-		update_slave_cmd (cbdav->priv, old_slave_cmd);
-		g_mutex_unlock (&cbdav->priv->busy_lock);
+		update_slave_cmd (gtasks->priv, old_slave_cmd);
+		g_mutex_unlock (&gtasks->priv->busy_lock);
 	}
 
-	cbdav->priv->updating_source = FALSE;
+	gtasks->priv->updating_source = FALSE;
 
-	g_object_unref (cbdav);
+	g_object_unref (gtasks);
 
 	return NULL;
 }
 
 static void
-caldav_source_changed_cb (ESource *source,
-                          ECalBackendCalDAV *cbdav)
+gtasks_source_changed_cb (ESource *source,
+                          ECalBackendGTasks *cbgtasks)
 {
 	GThread *thread;
 
 	g_return_if_fail (source != NULL);
 	g_return_if_fail (cbdav != NULL);
 
-	if (cbdav->priv->updating_source)
+	if (cbgtasks->priv->updating_source)
 		return;
 
-	cbdav->priv->updating_source = TRUE;
+	cbgtasks->priv->updating_source = TRUE;
 
-	thread = g_thread_new (NULL, caldav_source_changed_thread, g_object_ref (cbdav));
+	thread = g_thread_new (NULL, caldav_source_changed_thread, g_object_ref (cbgtasks));
 	g_thread_unref (thread);
 }
 
