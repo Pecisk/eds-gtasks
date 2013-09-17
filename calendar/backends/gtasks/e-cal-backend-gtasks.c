@@ -111,51 +111,6 @@ static void	caldav_source_authenticator_init
 
 G_DEFINE_TYPE (ECalBackendGTasks, e_cal_backend_gtasks, E_TYPE_CAL_BACKEND_SYNC)
 
-/* ************************************************************************* */
-/* Debugging */
-
-#define DEBUG_MESSAGE "message"
-#define DEBUG_MESSAGE_HEADER "message:header"
-#define DEBUG_MESSAGE_BODY "message:body"
-#define DEBUG_SERVER_ITEMS "items"
-#define DEBUG_ATTACHMENTS "attachments"
-
-static void convert_to_inline_attachment (ECalBackendCalDAV *cbdav, icalcomponent *icalcomp);
-static void convert_to_url_attachment (ECalBackendCalDAV *cbdav, icalcomponent *icalcomp);
-static void remove_cached_attachment (ECalBackendCalDAV *cbdav, const gchar *uid);
-
-static gboolean caldav_debug_all = FALSE;
-static GHashTable *caldav_debug_table = NULL;
-
-static void
-add_debug_key (const gchar *start,
-               const gchar *end)
-{
-	gchar *debug_key;
-	gchar *debug_value;
-
-	if (start == end) {
-		return;
-	}
-
-	debug_key = debug_value = g_strndup (start, end - start);
-
-	debug_key = g_strchug (debug_key);
-	debug_key = g_strchomp (debug_key);
-
-	if (strlen (debug_key) == 0) {
-		g_free (debug_value);
-		return;
-	}
-
-	g_hash_table_insert (
-		caldav_debug_table,
-		debug_key,
-		debug_value);
-
-	d (g_debug ("Adding %s to enabled debugging keys", debug_key));
-}
-
 /* TODO Do not replicate this in every backend */
 static icaltimezone *
 resolve_tzid (const gchar *tzid,
@@ -168,28 +123,9 @@ resolve_tzid (const gchar *tzid,
 	return e_timezone_cache_get_timezone (timezone_cache, tzid);
 }
 
-static gboolean
-put_component_to_store (ECalBackendCalDAV *cbdav,
-                        ECalComponent *comp)
-{
-	time_t time_start, time_end;
-
-	e_cal_util_get_component_occur_times (
-		comp, &time_start, &time_end,
-		resolve_tzid, cbdav,  icaltimezone_get_utc_timezone (),
-		e_cal_backend_get_kind (E_CAL_BACKEND (cbdav)));
-
-	return e_cal_backend_store_put_component_with_time_range (
-		cbdav->priv->store, comp, time_start, time_end);
-}
-
 static ECalBackendSyncClass *parent_class = NULL;
 
 static void gtasks_source_changed_cb (ESource *source, ECalBackendGTasks *cbgtasks);
-
-static gboolean remove_comp_from_cache (ECalBackendGTasks *cbgtasks, const gchar *uid, const gchar *rid);
-static gboolean put_comp_to_cache (ECalBackendGTasks *cbgtasks, icalcomponent *icalcomp, const gchar *href, const gchar *etag);
-static void put_server_comp_to_cache (ECalBackendCalDAV *cbgtasks, icalcomponent *icomp, const gchar *href, const gchar *etag, GTree *c_uid2complist);
 
 /* ************************************************************************* */
 /* Misc. utility functions */
@@ -204,68 +140,6 @@ update_slave_cmd (ECalBackendCalDAVPrivate *priv,
 		return;
 
 	priv->slave_cmd = slave_cmd;
-}
-
-#define X_E_CALDAV "X-EVOLUTION-CALDAV-"
-#define X_E_CALDAV_ATTACHMENT_NAME X_E_CALDAV "ATTACHMENT-NAME"
-
-static void
-icomp_x_prop_set (icalcomponent *comp,
-                  const gchar *key,
-                  const gchar *value)
-{
-	icalproperty *xprop;
-
-	/* Find the old one first */
-	xprop = icalcomponent_get_first_property (comp, ICAL_X_PROPERTY);
-
-	while (xprop) {
-		const gchar *str = icalproperty_get_x_name (xprop);
-
-		if (!strcmp (str, key)) {
-			if (value) {
-				icalproperty_set_value_from_string (xprop, value, "NO");
-			} else {
-				icalcomponent_remove_property (comp, xprop);
-				icalproperty_free (xprop);
-			}
-			break;
-		}
-
-		xprop = icalcomponent_get_next_property (comp, ICAL_X_PROPERTY);
-	}
-
-	if (!xprop && value) {
-		xprop = icalproperty_new_x (value);
-		icalproperty_set_x_name (xprop, key);
-		icalcomponent_add_property (comp, xprop);
-	}
-}
-
-static gchar *
-icomp_x_prop_get (icalcomponent *comp,
-                  const gchar *key)
-{
-	icalproperty *xprop;
-
-	/* Find the old one first */
-	xprop = icalcomponent_get_first_property (comp, ICAL_X_PROPERTY);
-
-	while (xprop) {
-		const gchar *str = icalproperty_get_x_name (xprop);
-
-		if (!strcmp (str, key)) {
-			break;
-		}
-
-		xprop = icalcomponent_get_next_property (comp, ICAL_X_PROPERTY);
-	}
-
-	if (xprop) {
-		return icalproperty_get_value_as_string_r (xprop);
-	}
-
-	return NULL;
 }
 
 /* passing NULL as 'href' removes the property */
@@ -398,145 +272,19 @@ gtasks_object_free (GTasksObject *object,
 }
 
 static gboolean
-gtasks_query_for_uid (ECalBackendGTasks *gtasks,
+gtasks_query_for_uid (ECalBackendGTasks *cbgtasks,
                              const gchar *uid,
                              GCancellable *cancellable,
                              GError **error)
 {
-	SoupMessage *message;
-	xmlOutputBufferPtr buf;
-	xmlNodePtr node;
-	xmlNodePtr sn;
-	xmlNodePtr root;
-	xmlDocPtr doc;
-	xmlNsPtr nsdav;
-	xmlNsPtr nscd;
-	gconstpointer buf_content;
-	gsize buf_size;
-	gboolean result = FALSE;
-	gint ii, len = 0;
-	CalDAVObject *objs = NULL, *object;
-
-	g_return_val_if_fail (cbdav != NULL, FALSE);
-	g_return_val_if_fail (E_IS_CAL_BACKEND_CALDAV (cbdav), FALSE);
-	g_return_val_if_fail (uid && *uid, FALSE);
-
-	/* Allocate the soup message */
-	message = soup_message_new ("REPORT", cbdav->priv->uri);
-	if (message == NULL)
-		return FALSE;
-
-	/* Maybe we should just do a g_strdup_printf here? */
-	/* Prepare request body */
-	doc = xmlNewDoc ((xmlChar *) "1.0");
-	root = xmlNewDocNode (doc, NULL, (xmlChar *) "calendar-query", NULL);
-	nscd = xmlNewNs (root, (xmlChar *) "urn:ietf:params:xml:ns:caldav", (xmlChar *) "C");
-	xmlSetNs (root, nscd);
-	xmlDocSetRootElement (doc, root);
-
-	/* Add webdav tags */
-	nsdav = xmlNewNs (root, (xmlChar *) "DAV:", (xmlChar *) "D");
-	node = xmlNewTextChild (root, nsdav, (xmlChar *) "prop", NULL);
-	xmlNewTextChild (node, nsdav, (xmlChar *) "getetag", NULL);
-	xmlNewTextChild (node, nscd, (xmlChar *) "calendar-data", NULL);
-
-	node = xmlNewTextChild (root, nscd, (xmlChar *) "filter", NULL);
-	node = xmlNewTextChild (node, nscd, (xmlChar *) "comp-filter", NULL);
-	xmlSetProp (node, (xmlChar *) "name", (xmlChar *) "VCALENDAR");
-
-	sn = xmlNewTextChild (node, nscd, (xmlChar *) "comp-filter", NULL);
-	switch (e_cal_backend_get_kind (E_CAL_BACKEND (cbdav))) {
-		default:
-		case ICAL_VEVENT_COMPONENT:
-			xmlSetProp (sn, (xmlChar *) "name", (xmlChar *) "VEVENT");
-			break;
-		case ICAL_VJOURNAL_COMPONENT:
-			xmlSetProp (sn, (xmlChar *) "name", (xmlChar *) "VJOURNAL");
-			break;
-		case ICAL_VTODO_COMPONENT:
-			xmlSetProp (sn, (xmlChar *) "name", (xmlChar *) "VTODO");
-			break;
-	}
-
-	node = xmlNewTextChild (sn, nscd, (xmlChar *) "prop-filter", NULL);
-	xmlSetProp (node, (xmlChar *) "name", (xmlChar *) "UID");
-
-	sn = xmlNewTextChild (node, nscd, (xmlChar *) "text-match", NULL);
-	xmlSetProp (sn, (xmlChar *) "collation", (xmlChar *) "i;octet");
-	xmlNodeSetContent (sn, (xmlChar *) uid);
-
-	buf = xmlAllocOutputBuffer (NULL);
-	xmlNodeDumpOutput (buf, doc, root, 0, 1, NULL);
-	xmlOutputBufferFlush (buf);
-
-	/* Prepare the soup message */
-	soup_message_headers_append (
-		message->request_headers,
-		"User-Agent", "Evolution/" VERSION);
-	soup_message_headers_append (
-		message->request_headers,
-		"Depth", "1");
-
-	buf_content = compat_libxml_output_buffer_get_content (buf, &buf_size);
-	soup_message_set_request (
-		message,
-		"application/xml",
-		SOUP_MEMORY_COPY,
-		buf_content, buf_size);
-
-	/* Send the request now */
-	send_and_handle_redirection (cbdav, message, NULL, cancellable, error);
-
-	/* Clean up the memory */
-	xmlOutputBufferClose (buf);
-	xmlFreeDoc (doc);
-
-	/* Check the result */
-	if (message->status_code != 207) {
-		switch (message->status_code) {
-		case SOUP_STATUS_CANT_CONNECT:
-		case SOUP_STATUS_CANT_CONNECT_PROXY:
-			cbdav->priv->opened = FALSE;
-			update_slave_cmd (cbdav->priv, SLAVE_SHOULD_SLEEP);
-			e_cal_backend_set_writable (
-				E_CAL_BACKEND (cbdav), FALSE);
-			break;
-		case 401:
-			caldav_authenticate (cbdav, TRUE, NULL, NULL);
-			break;
-		default:
-			g_warning ("Server did not response with 207, but with code %d (%s)", message->status_code, soup_status_get_phrase (message->status_code) ? soup_status_get_phrase (message->status_code) : "Unknown code");
-			break;
-		}
-
-		g_object_unref (message);
-		return FALSE;
-	}
-
-	/* Parse the response body */
-	if (parse_report_response (message, &objs, &len)) {
-		result = TRUE;
-
-		for (ii = 0, object = objs; ii < len; ii++, object++) {
-			if (object->status == 200 && object->href && object->etag && object->cdata && *object->cdata) {
-				icalcomponent *icomp = icalparser_parse_string (object->cdata);
-
-				if (icomp) {
-					put_server_comp_to_cache (cbdav, icomp, object->href, object->etag, NULL);
-					icalcomponent_free (icomp);
-				}
-			}
-
-			/* these free immediately */
-			caldav_object_free (object, FALSE);
-		}
-
-		/* cache update done for fetched items */
-		g_free (objs);
-	}
-
-	g_object_unref (message);
-
+	// FIXME do a query write this function in 
+	gdata_tasks_service_query_task_by_id (cbgtasks->priv->service, cbgtasks);
+	// FIXME create component
+	ECalComponent *comp = NULL;
+	// FIXME add it to storage
+	e_cal_backend_store_put_component (cbgtasks->priv->store, comp);
+	e_cal_backend_notify_component_created (cbgtasks, new_comp);
+	//e_cal_backend_notify_component_modified (cal_backend, old_comp, new_comp);
 	return result;
 }
 
@@ -1268,155 +1016,6 @@ get_comp_from_cache (ECalBackendGTasks *cbgtasks,
 }
 
 static void
-put_server_comp_to_cache (ECalBackendGTasks *cbgtasks,
-                          icalcomponent *icomp,
-                          const gchar *href,
-                          const gchar *etag,
-                          GTree *c_uid2complist)
-{
-	icalcomponent_kind kind;
-	ECalBackend *cal_backend;
-
-	g_return_if_fail (cbdav != NULL);
-	g_return_if_fail (icomp != NULL);
-
-	cal_backend = E_CAL_BACKEND (cbgtasks);
-	kind = icalcomponent_isa (icomp);
-	extract_timezones (cbdav, icomp);
-
-	if (kind == ICAL_VCALENDAR_COMPONENT) {
-		icalcomponent *subcomp;
-
-		kind = e_cal_backend_get_kind (cal_backend);
-
-		for (subcomp = icalcomponent_get_first_component (icomp, kind);
-		     subcomp;
-		     subcomp = icalcomponent_get_next_component (icomp, kind)) {
-			ECalComponent *new_comp, *old_comp;
-
-			convert_to_url_attachment (cbdav, subcomp);
-			new_comp = e_cal_component_new ();
-			if (e_cal_component_set_icalcomponent (new_comp, icalcomponent_new_clone (subcomp))) {
-				const gchar *uid = NULL;
-				struct cache_comp_list *ccl;
-
-				e_cal_component_get_uid (new_comp, &uid);
-				if (!uid) {
-					g_warning ("%s: no UID on component!", G_STRFUNC);
-					g_object_unref (new_comp);
-					continue;
-				}
-
-				if (href)
-					ecalcomp_set_href (new_comp, href);
-				if (etag)
-					ecalcomp_set_etag (new_comp, etag);
-
-				old_comp = NULL;
-				if (c_uid2complist) {
-					ccl = g_tree_lookup (c_uid2complist, uid);
-					if (ccl) {
-						gchar *nc_rid = e_cal_component_get_recurid_as_string (new_comp);
-						GSList *p;
-
-						for (p = ccl->slist; p && !old_comp; p = p->next) {
-							gchar *oc_rid;
-
-							old_comp = p->data;
-
-							oc_rid = e_cal_component_get_recurid_as_string (old_comp);
-							if (g_strcmp0 (nc_rid, oc_rid) != 0) {
-								old_comp = NULL;
-							}
-
-							g_free (oc_rid);
-						}
-
-						g_free (nc_rid);
-					}
-				}
-
-				put_component_to_store (cbdav, new_comp);
-
-				if (old_comp == NULL) {
-					e_cal_backend_notify_component_created (cal_backend, new_comp);
-				} else {
-					e_cal_backend_notify_component_modified (cal_backend, old_comp, new_comp);
-
-					if (ccl)
-						ccl->slist = g_slist_remove (ccl->slist, old_comp);
-					g_object_unref (old_comp);
-				}
-			}
-
-			g_object_unref (new_comp);
-		}
-	}
-}
-
-static gboolean
-put_comp_to_cache (ECalBackendCalDAV *cbdav,
-                   icalcomponent *icalcomp,
-                   const gchar *href,
-                   const gchar *etag)
-{
-	icalcomponent_kind my_kind;
-	ECalComponent *comp;
-	gboolean res = FALSE;
-
-	g_return_val_if_fail (cbdav != NULL, FALSE);
-	g_return_val_if_fail (icalcomp != NULL, FALSE);
-
-	my_kind = e_cal_backend_get_kind (E_CAL_BACKEND (cbdav));
-	comp = e_cal_component_new ();
-
-	if (icalcomponent_isa (icalcomp) == ICAL_VCALENDAR_COMPONENT) {
-		icalcomponent *subcomp;
-
-		/* remove all old components from the cache first */
-		for (subcomp = icalcomponent_get_first_component (icalcomp, my_kind);
-		     subcomp;
-		     subcomp = icalcomponent_get_next_component (icalcomp, my_kind)) {
-			remove_comp_from_cache (cbdav, icalcomponent_get_uid (subcomp), NULL);
-		}
-
-		/* then put new. It's because some detached instances could be removed on the server. */
-		for (subcomp = icalcomponent_get_first_component (icalcomp, my_kind);
-		     subcomp;
-		     subcomp = icalcomponent_get_next_component (icalcomp, my_kind)) {
-			/* because reusing the same comp doesn't clear recur_id member properly */
-			g_object_unref (comp);
-			comp = e_cal_component_new ();
-
-			if (e_cal_component_set_icalcomponent (comp, icalcomponent_new_clone (subcomp))) {
-				if (href)
-					ecalcomp_set_href (comp, href);
-				if (etag)
-					ecalcomp_set_etag (comp, etag);
-
-				if (put_component_to_store (cbdav, comp))
-					res = TRUE;
-			}
-		}
-	} else if (icalcomponent_isa (icalcomp) == my_kind) {
-		remove_comp_from_cache (cbdav, icalcomponent_get_uid (icalcomp), NULL);
-
-		if (e_cal_component_set_icalcomponent (comp, icalcomponent_new_clone (icalcomp))) {
-			if (href)
-				ecalcomp_set_href (comp, href);
-			if (etag)
-				ecalcomp_set_etag (comp, etag);
-
-			res = put_component_to_store (cbdav, comp);
-		}
-	}
-
-	g_object_unref (comp);
-
-	return res;
-}
-
-static void
 remove_property (gpointer prop,
                  gpointer icomp)
 {
@@ -1506,43 +1105,6 @@ remove_files (const gchar *dir,
 		}
 		g_dir_close (d);
 	}
-}
-
-static void
-remove_cached_attachment (ECalBackendCalDAV *cbdav,
-                          const gchar *uid)
-{
-	GSList *l;
-	guint len;
-	gchar *dir;
-	gchar *fileprefix;
-
-	g_return_if_fail (cbdav != NULL);
-	g_return_if_fail (uid != NULL);
-
-	l = e_cal_backend_store_get_components_by_uid (cbdav->priv->store, uid);
-	len = g_slist_length (l);
-	g_slist_foreach (l, (GFunc) g_object_unref, NULL);
-	g_slist_free (l);
-	if (len > 0)
-		return;
-
-	dir = e_cal_backend_create_cache_filename (E_CAL_BACKEND (cbdav), uid, "a", 0);
-	if (!dir)
-		return;
-
-	fileprefix = g_strrstr (dir, G_DIR_SEPARATOR_S);
-	if (fileprefix) {
-		*fileprefix = '\0';
-		fileprefix++;
-
-		if (*fileprefix)
-			fileprefix[strlen (fileprefix) - 1] = '\0';
-
-		remove_files (dir, fileprefix);
-	}
-
-	g_free (dir);
 }
 
 /* callback for icalcomponent_foreach_tzid */
@@ -2646,27 +2208,29 @@ gtasks_get_object (ECalBackendSync *backend,
                    GError **perror)
 {
 	ECalBackendCalGTasks *cbgtasks;
-	icalcomponent *icalcomp;
-
+	ECalComponent *comp = NULL;
 	cbgtasks = E_CAL_BACKEND_GTASKS (backend);
 
 	*object = NULL;
-	icalcomp = get_comp_from_cache (cbdav, uid, rid, NULL, NULL);
 
-	if (!icalcomp && e_backend_get_online (E_BACKEND (backend))) {
-		/* try to fetch from the server, maybe the event was received only recently */
-		if (gtasks_query_for_uid (cbdav, uid, cancellable, NULL)) {
-			icalcomp = get_comp_from_cache (cbdav, uid, rid, NULL, NULL);
-		}
-	}
-
-	if (!icalcomp) {
-		g_propagate_error (perror, EDC_ERROR (ObjectNotFound));
+	if (!priv->store) {
+		g_propagate_error (error, EDC_ERROR (ObjectNotFound));
 		return;
 	}
 
-	*object = icalcomponent_as_ical_string_r (icalcomp);
-	icalcomponent_free (icalcomp);
+	comp = e_cal_backend_store_get_components_by_uid_as_ical_string (priv->store, uid);
+
+	if (!*object && e_backend_get_online (E_BACKEND (backend))) {
+		/* try to fetch from the server, maybe the event was received only recently */
+		if (gtasks_query_for_uid (cbgtasks, uid, cancellable, NULL)) {
+			comp = e_cal_backend_store_get_components_by_uid_as_ical_string (priv->store, uid);
+		}
+	}
+
+	if (!*object)
+		g_propagate_error (error, EDC_ERROR (ObjectNotFound));
+
+	*object = e_cal_component_get_as_string (comp);
 }
 
 /* FIXME returning NOT_SUPPORTED */
@@ -2683,7 +2247,7 @@ gtasks_add_timezone (ECalBackendSync *backend,
 }
 
 static void
-caldav_get_free_busy (ECalBackendSync *backend,
+gtasks_get_free_busy (ECalBackendSync *backend,
                       EDataCal *cal,
                       GCancellable *cancellable,
                       const GSList *users,
