@@ -281,6 +281,13 @@ gtasks_query_for_uid (ECalBackendGTasks *cbgtasks,
 	gdata_tasks_service_query_task_by_id (cbgtasks->priv->service, cbgtasks);
 	// FIXME create component
 	ECalComponent *comp = NULL;
+	
+	//e_cal_component_set_new_vtype ()
+	//e_cal_component_set_summary ();
+	//e_cal_component_set_completed ();
+	//e_cal_component_set_due ();
+	//e_cal_component_set_status ()
+		
 	// FIXME add it to storage
 	e_cal_backend_store_put_component (cbgtasks->priv->store, comp);
 	e_cal_backend_notify_component_created (cbgtasks, new_comp);
