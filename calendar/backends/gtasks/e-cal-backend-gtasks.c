@@ -142,80 +142,6 @@ update_slave_cmd (ECalBackendCalDAVPrivate *priv,
 	priv->slave_cmd = slave_cmd;
 }
 
-/* passing NULL as 'href' removes the property */
-static void
-ecalcomp_set_href (ECalComponent *comp,
-                   const gchar *href)
-{
-	icalcomponent *icomp;
-
-	icomp = e_cal_component_get_icalcomponent (comp);
-	g_return_if_fail (icomp != NULL);
-
-	icomp_x_prop_set (icomp, X_E_CALDAV "HREF", href);
-}
-
-static gchar *
-ecalcomp_get_href (ECalComponent *comp)
-{
-	icalcomponent *icomp;
-	gchar          *str;
-
-	str = NULL;
-	icomp = e_cal_component_get_icalcomponent (comp);
-	g_return_val_if_fail (icomp != NULL, NULL);
-
-	str =  icomp_x_prop_get (icomp, X_E_CALDAV "HREF");
-
-	return str;
-}
-
-/* passing NULL as 'etag' removes the property */
-static void
-ecalcomp_set_etag (ECalComponent *comp,
-                   const gchar *etag)
-{
-	icalcomponent *icomp;
-
-	icomp = e_cal_component_get_icalcomponent (comp);
-	g_return_if_fail (icomp != NULL);
-
-	icomp_x_prop_set (icomp, X_E_CALDAV "ETAG", etag);
-}
-
-static gchar *
-ecalcomp_get_etag (ECalComponent *comp)
-{
-	icalcomponent *icomp;
-	gchar          *str;
-
-	str = NULL;
-	icomp = e_cal_component_get_icalcomponent (comp);
-	g_return_val_if_fail (icomp != NULL, NULL);
-
-	str =  icomp_x_prop_get (icomp, X_E_CALDAV "ETAG");
-
-	/* libical 0.48 escapes quotes, thus unescape them */
-	if (str && strchr (str, '\\')) {
-		gint ii, jj;
-
-		for (ii = 0, jj = 0; str[ii]; ii++) {
-			if (str[ii] == '\\') {
-				ii++;
-				if (!str[ii])
-					break;
-			}
-
-			str[jj] = str[ii];
-			jj++;
-		}
-
-		str[jj] = 0;
-	}
-
-	return str;
-}
-
 /* ************************************************************************* */
 
 
@@ -277,33 +203,40 @@ gtasks_query_for_uid (ECalBackendGTasks *cbgtasks,
                              GCancellable *cancellable,
                              GError **error)
 {
-	// FIXME do a query write this function in 
-	gdata_tasks_service_query_task_by_id (cbgtasks->priv->service, cbgtasks);
-	// FIXME create component
-	ECalComponent *comp = NULL;
-	
-	//e_cal_component_set_new_vtype ()
-	//e_cal_component_set_summary ();
-	//e_cal_component_set_completed ();
-	//e_cal_component_set_due ();
-	//e_cal_component_set_status ()
-		
-	// FIXME add it to storage
+	// FIXME do a query write this function in gdata 
+	GDataTasksTask *task = gdata_tasks_service_query_task_by_ids (cbgtasks->priv->service, uid, "id-of-tasklist", cancellable, error);
+
+	ECalComponent *comp = NULL;	
+	comp = e_cal_component_new ();
+
+	e_cal_component_set_new_vtype (comp, E_CAL_COMPONENT_TODO);
+
+	// FIXME can I pass NULL or do I should do ""
+	const gchar* notes = gdata_tasks_get_notes (task);
+	e_cal_component_set_summary (comp, {notes, NULL});
+
+	if (gdata_tasks_get_completed (tasks) != -1)
+		e_cal_component_set_completed (comp, icaltime_from_timet_with_zone (gdata_task_get_completed (task), 0, 0));
+	if (gdata_tasks_get_due (tasks) != -1)
+		e_cal_component_set_due (comp, icaltime_from_timet_with_zone (gdata_task_get_due (task), 0, 0));
+
+	if (g_str_equal (gdata_tasks_get_status (task), "completed")) {
+		e_cal_component_set_status (comp, ICAL_STATUS_COMPLETED);
+	} else {
+		// FIXME shouldn't this be NONE? Verify
+		e_cal_component_set_status (comp, ICAL_STATUS_NEEDSACTION);
+	}
+
+	// add it to storage
 	e_cal_backend_store_put_component (cbgtasks->priv->store, comp);
-	e_cal_backend_notify_component_created (cbgtasks, new_comp);
+	// notify view that component is created
+	e_cal_backend_notify_component_created (cbgtasks, comp);
 	//e_cal_backend_notify_component_modified (cal_backend, old_comp, new_comp);
 	return result;
 }
 
 /* ************************************************************************* */
 /* Synchronization foo */
-
-static gboolean extract_timezones (ECalBackendCalDAV *cbdav, icalcomponent *icomp);
-
-struct cache_comp_list
-{
-	GSList *slist;
-};
 
 static gboolean
 remove_complist_from_cache_and_notify_cb (gpointer key,
@@ -1022,248 +955,6 @@ get_comp_from_cache (ECalBackendGTasks *cbgtasks,
 	return icalcomp;
 }
 
-static void
-remove_property (gpointer prop,
-                 gpointer icomp)
-{
-	icalcomponent_remove_property (icomp, prop);
-	icalproperty_free (prop);
-}
-
-static void
-strip_unneeded_x_props (icalcomponent *icomp)
-{
-	icalproperty *prop;
-	GSList *to_remove = NULL;
-
-	g_return_if_fail (icomp != NULL);
-	g_return_if_fail (icalcomponent_isa (icomp) != ICAL_VCALENDAR_COMPONENT);
-
-	for (prop = icalcomponent_get_first_property (icomp, ICAL_X_PROPERTY);
-	     prop;
-	     prop = icalcomponent_get_next_property (icomp, ICAL_X_PROPERTY)) {
-		if (g_str_has_prefix (icalproperty_get_x_name (prop), X_E_CALDAV)) {
-			to_remove = g_slist_prepend (to_remove, prop);
-		}
-	}
-
-	for (prop = icalcomponent_get_first_property (icomp, ICAL_XLICERROR_PROPERTY);
-	     prop;
-	     prop = icalcomponent_get_next_property (icomp, ICAL_XLICERROR_PROPERTY)) {
-		to_remove = g_slist_prepend (to_remove, prop);
-	}
-
-	g_slist_foreach (to_remove, remove_property, icomp);
-	g_slist_free (to_remove);
-}
-
-static gboolean
-is_stored_on_server (ECalBackendCalDAV *cbdav,
-                     const gchar *uri)
-{
-	SoupURI *my_uri, *test_uri;
-	gboolean res;
-
-	g_return_val_if_fail (E_IS_CAL_BACKEND_CALDAV (cbdav), FALSE);
-	g_return_val_if_fail (cbdav->priv->uri != NULL, FALSE);
-	g_return_val_if_fail (uri != NULL, FALSE);
-
-	my_uri = soup_uri_new (cbdav->priv->uri);
-	g_return_val_if_fail (my_uri != NULL, FALSE);
-
-	test_uri = soup_uri_new (uri);
-	if (!test_uri) {
-		soup_uri_free (my_uri);
-		return FALSE;
-	}
-
-	res = my_uri->host && test_uri->host && g_ascii_strcasecmp (my_uri->host, test_uri->host) == 0;
-
-	soup_uri_free (my_uri);
-	soup_uri_free (test_uri);
-
-	return res;
-}
-
-static void
-remove_files (const gchar *dir,
-              const gchar *fileprefix)
-{
-	GDir *d;
-
-	g_return_if_fail (dir != NULL);
-	g_return_if_fail (fileprefix != NULL);
-	g_return_if_fail (*fileprefix != '\0');
-
-	d = g_dir_open (dir, 0, NULL);
-	if (d) {
-		const gchar *entry;
-		gint len = strlen (fileprefix);
-
-		while ((entry = g_dir_read_name (d)) != NULL) {
-			if (entry && strncmp (entry, fileprefix, len) == 0) {
-				gchar *path;
-
-				path = g_build_filename (dir, entry, NULL);
-				if (!g_file_test (path, G_FILE_TEST_IS_DIR))
-					g_unlink (path);
-				g_free (path);
-			}
-		}
-		g_dir_close (d);
-	}
-}
-
-/* callback for icalcomponent_foreach_tzid */
-typedef struct {
-	ECalBackendStore *store;
-	icalcomponent *vcal_comp;
-	icalcomponent *icalcomp;
-} ForeachTzidData;
-
-static void
-add_timezone_cb (icalparameter *param,
-                 gpointer data)
-{
-	icaltimezone *tz;
-	const gchar *tzid;
-	icalcomponent *vtz_comp;
-	ForeachTzidData *f_data = (ForeachTzidData *) data;
-	ETimezoneCache *cache;
-
-	tzid = icalparameter_get_tzid (param);
-	if (!tzid)
-		return;
-
-	tz = icalcomponent_get_timezone (f_data->vcal_comp, tzid);
-	if (tz)
-		return;
-
-	cache = e_cal_backend_store_ref_timezone_cache (f_data->store);
-
-	tz = icalcomponent_get_timezone (f_data->icalcomp, tzid);
-	if (tz == NULL)
-		tz = icaltimezone_get_builtin_timezone_from_tzid (tzid);
-	if (tz == NULL)
-		tz = e_timezone_cache_get_timezone (cache, tzid);
-
-	vtz_comp = icaltimezone_get_component (tz);
-
-	if (tz != NULL && vtz_comp != NULL)
-		icalcomponent_add_component (
-			f_data->vcal_comp,
-			icalcomponent_new_clone (vtz_comp));
-
-	g_object_unref (cache);
-}
-
-static void
-add_timezones_from_component (ECalBackendCalDAV *cbdav,
-                              icalcomponent *vcal_comp,
-                              icalcomponent *icalcomp)
-{
-	ForeachTzidData f_data;
-
-	g_return_if_fail (cbdav != NULL);
-	g_return_if_fail (vcal_comp != NULL);
-	g_return_if_fail (icalcomp != NULL);
-
-	f_data.store = cbdav->priv->store;
-	f_data.vcal_comp = vcal_comp;
-	f_data.icalcomp = icalcomp;
-
-	icalcomponent_foreach_tzid (icalcomp, add_timezone_cb, &f_data);
-}
-
-/* also removes X-EVOLUTION-CALDAV from all the components */
-static gchar *
-pack_cobj (ECalBackendCalDAV *cbdav,
-           icalcomponent *icomp)
-{
-	icalcomponent *calcomp;
-	gchar          *objstr;
-
-	if (icalcomponent_isa (icomp) != ICAL_VCALENDAR_COMPONENT) {
-		icalcomponent *cclone;
-
-		calcomp = e_cal_util_new_top_level ();
-
-		cclone = icalcomponent_new_clone (icomp);
-		strip_unneeded_x_props (cclone);
-		convert_to_inline_attachment (cbdav, cclone);
-		icalcomponent_add_component (calcomp, cclone);
-		add_timezones_from_component (cbdav, calcomp, cclone);
-	} else {
-		icalcomponent *subcomp;
-		icalcomponent_kind my_kind = e_cal_backend_get_kind (E_CAL_BACKEND (cbdav));
-
-		calcomp = icalcomponent_new_clone (icomp);
-		for (subcomp = icalcomponent_get_first_component (calcomp, my_kind);
-		     subcomp;
-		     subcomp = icalcomponent_get_next_component (calcomp, my_kind)) {
-			strip_unneeded_x_props (subcomp);
-			convert_to_inline_attachment (cbdav, subcomp);
-			add_timezones_from_component (cbdav, calcomp, subcomp);
-		}
-	}
-
-	objstr = icalcomponent_as_ical_string_r (calcomp);
-	icalcomponent_free (calcomp);
-
-	g_assert (objstr);
-
-	return objstr;
-
-}
-
-static void
-sanitize_component (ECalBackend *cb,
-                    ECalComponent *comp)
-{
-	ECalComponentDateTime dt;
-	icaltimezone *zone;
-
-	/* Check dtstart, dtend and due's timezone, and convert it to local
-	 * default timezone if the timezone is not in our builtin timezone
-	 * list */
-	e_cal_component_get_dtstart (comp, &dt);
-	if (dt.value && dt.tzid) {
-		zone = e_timezone_cache_get_timezone (
-			E_TIMEZONE_CACHE (cb), dt.tzid);
-		if (!zone) {
-			g_free ((gchar *) dt.tzid);
-			dt.tzid = g_strdup ("UTC");
-			e_cal_component_set_dtstart (comp, &dt);
-		}
-	}
-	e_cal_component_free_datetime (&dt);
-
-	e_cal_component_get_dtend (comp, &dt);
-	if (dt.value && dt.tzid) {
-		zone = e_timezone_cache_get_timezone (
-			E_TIMEZONE_CACHE (cb), dt.tzid);
-		if (!zone) {
-			g_free ((gchar *) dt.tzid);
-			dt.tzid = g_strdup ("UTC");
-			e_cal_component_set_dtend (comp, &dt);
-		}
-	}
-	e_cal_component_free_datetime (&dt);
-
-	e_cal_component_get_due (comp, &dt);
-	if (dt.value && dt.tzid) {
-		zone = e_timezone_cache_get_timezone (
-			E_TIMEZONE_CACHE (cb), dt.tzid);
-		if (!zone) {
-			g_free ((gchar *) dt.tzid);
-			dt.tzid = g_strdup ("UTC");
-			e_cal_component_set_due (comp, &dt);
-		}
-	}
-	e_cal_component_free_datetime (&dt);
-	e_cal_component_abort_sequence (comp);
-}
-
 static gboolean
 cache_contains (ECalBackendCalDAV *cbdav,
                 const gchar *uid,
@@ -1824,74 +1515,6 @@ do_remove_objects (ECalBackendCalDAV *cbdav,
 }
 
 static void
-extract_objects (icalcomponent *icomp,
-                 icalcomponent_kind ekind,
-                 GSList **objects,
-                 GError **error)
-{
-	icalcomponent         *scomp;
-	icalcomponent_kind     kind;
-
-	kind = icalcomponent_isa (icomp);
-
-	if (kind == ekind) {
-		*objects = g_slist_prepend (NULL, icomp);
-		return;
-	}
-
-	if (kind != ICAL_VCALENDAR_COMPONENT) {
-		g_propagate_error (error, EDC_ERROR (InvalidObject));
-		return;
-	}
-
-	*objects = NULL;
-	scomp = icalcomponent_get_first_component (icomp, ekind);
-
-	while (scomp) {
-		/* Remove components from toplevel here */
-		*objects = g_slist_prepend (*objects, scomp);
-		icalcomponent_remove_component (icomp, scomp);
-
-		scomp = icalcomponent_get_next_component (icomp, ekind);
-	}
-}
-
-static gboolean
-extract_timezones (ECalBackendCalDAV *cbdav,
-                   icalcomponent *icomp)
-{
-	ETimezoneCache *timezone_cache;
-	GSList *timezones = NULL, *iter;
-	icaltimezone *zone;
-	GError *err = NULL;
-
-	g_return_val_if_fail (cbdav != NULL, FALSE);
-	g_return_val_if_fail (icomp != NULL, FALSE);
-
-	timezone_cache = E_TIMEZONE_CACHE (cbdav);
-
-	extract_objects (icomp, ICAL_VTIMEZONE_COMPONENT, &timezones, &err);
-	if (err) {
-		g_error_free (err);
-		return FALSE;
-	}
-
-	zone = icaltimezone_new ();
-	for (iter = timezones; iter; iter = iter->next) {
-		if (icaltimezone_set_component (zone, iter->data)) {
-			e_timezone_cache_add_timezone (timezone_cache, zone);
-		} else {
-			icalcomponent_free (iter->data);
-		}
-	}
-
-	icaltimezone_free (zone, TRUE);
-	g_slist_free (timezones);
-
-	return TRUE;
-}
-
-static void
 process_object (ECalBackendCalDAV *cbdav,
                 ECalComponent *ecomp,
                 gboolean online,
@@ -2277,15 +1900,15 @@ gtasks_get_object_list (ECalBackendSync *backend,
                         GSList **objects,
                         GError **perror)
 {
-	ECalBackendCalDAV        *cbdav;
-	ECalBackendSExp	 *sexp;
+	ECalBackendGTasks *cbgtasks;
+	ECalBackendSExp *sexp;
 	ETimezoneCache *cache;
-	gboolean                  do_search;
-	GSList			 *list, *iter;
+	gboolean do_search;
+	GSList *list, *iter;
 	time_t occur_start = -1, occur_end = -1;
 	gboolean prunning_by_time;
 
-	cbdav = E_CAL_BACKEND_CALDAV (backend);
+	cbgtasks = E_CAL_BACKEND_GTASKS (backend);
 
 	sexp = e_cal_backend_sexp_new (sexp_string);
 
@@ -2303,7 +1926,7 @@ gtasks_get_object_list (ECalBackendSync *backend,
 	*objects = NULL;
 
 	prunning_by_time = e_cal_backend_sexp_evaluate_occur_times (sexp, &occur_start, &occur_end);
-
+	// FIXME how to handle timezone cache here, I have to implement interface?
 	cache = E_TIMEZONE_CACHE (backend);
 
 	list = prunning_by_time ?
