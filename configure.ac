@@ -1696,6 +1696,7 @@ calendar/backends/file/Makefile
 calendar/backends/http/Makefile
 calendar/backends/contacts/Makefile
 calendar/backends/weather/Makefile
+calendar/backends/gtasks/Makefile
 camel/Makefile
 camel/providers/Makefile
 camel/providers/imapx/Makefile

@@ -1,5 +1,11 @@
 ecal_backend_LTLIBRARIES = libecalbackendgtasks.la
 
+if HAVE_GOA
+GOA_SOURCES = \
+	e-gdata-goa-authorizer.c \
+	e-gdata-goa-authorizer.h
+endif
+
 libecalbackendgtasks_la_CPPFLAGS = \
 	$(AM_CPPFLAGS)	\
 	-I$(top_srcdir) \
@@ -10,6 +16,7 @@ libecalbackendgtasks_la_CPPFLAGS = \
 	$(SOUP_CFLAGS) \
 	-DG_LOG_DOMAIN=\"e-cal-backend-gtasks\" \
 	$(CODE_COVERAGE_CFLAGS) \
+	$(GDATA_CFLAGS) \
 	$(NULL)
 
 libecalbackendgtasks_la_SOURCES = \
@@ -24,6 +31,7 @@ libecalbackendgtasks_la_LIBADD = \
 	$(top_builddir)/libebackend/libebackend-1.2.la \
 	$(EVOLUTION_CALENDAR_LIBS) \
 	$(CAMEL_CFLAGS) \
+	$(GDATA_LIBS) \
 	$(SOUP_LIBS)
 
 libecalbackendgtasks_la_LDFLAGS = \
