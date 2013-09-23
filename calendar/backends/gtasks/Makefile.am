@@ -17,8 +17,8 @@ libecalbackendgtasks_la_SOURCES = \
 	e-cal-backend-gtasks-factory.c \
 	e-cal-backend-gtasks.c \
 	e-cal-backend-gtasks.h \
-	$(top_builddir)/addressbook/backends/google/e-gdata-oauth2-authorizer.c \
-	$(top_builddir)/addressbook/backends/google/e-gdata-oauth2-authorizer.h
+	e-gdata-oauth2-authorizer.c \
+	e-gdata-oauth2-authorizer.h
 
 libecalbackendgtasks_la_LIBADD = \
 	$(top_builddir)/calendar/libedata-cal/libedata-cal-1.2.la \

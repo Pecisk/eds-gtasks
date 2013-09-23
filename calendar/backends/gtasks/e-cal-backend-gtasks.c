@@ -30,6 +30,7 @@
 
 #include "e-cal-backend-gtasks.h"
 #include <gdata/gdata.h>
+#include "e-gdata-oauth2-authorizer.h"
 
 #define E_CAL_BACKEND_GTASKS_GET_PRIVATE(obj) \
 	(G_TYPE_INSTANCE_GET_PRIVATE \
@@ -78,8 +79,8 @@ static void gtasks_refresh (ECalBackendSync *backend, EDataCal *cal, GCancellabl
 static void gtasks_get_object (ECalBackendSync *backend, EDataCal *cal, GCancellable *cancellable, const gchar *uid, const gchar *rid, gchar **object, GError **perror);
 static void gtasks_get_object_list (ECalBackendSync *backend, EDataCal *cal, GCancellable *cancellable, const gchar *sexp_string, GSList **objects, GError **perror);
 static void gtasks_create_objects (ECalBackendSync *backend, EDataCal *cal, GCancellable *cancellable, const GSList *in_calobjs, GSList **uids, GSList **new_components, GError **perror);
-static void gtasks_modify_objects (ECalBackendSync *backend, EDataCal *cal, GCancellable *cancellable, const GSList *in_calobjs, GSList **uids, GSList **new_components, GError **perror);
-static void gtasks_remove_objects (ECalBackendSync *backend, EDataCal *cal, GCancellable *cancellable, const GSList *in_calobjs, GSList **uids, GSList **new_components, GError **perror);
+static void gtasks_modify_objects (ECalBackendSync *backend, EDataCal *cal, GCancellable *cancellable, const GSList *in_calobjs, ECalObjModType mod, GSList **uids, GSList **new_components, GError **perror);
+static void gtasks_remove_objects (ECalBackendSync *backend, EDataCal *cal, GCancellable *cancellable, const GSList *in_calobjs, ECalObjModType mod, GSList **uids, GSList **new_components, GError **perror);
 static void gtasks_receive_objects (ECalBackendSync *backend, EDataCal *cal, GCancellable *cancellable, const gchar *calobj, GError **perror);
 static void gtasks_send_objects (ECalBackendSync *backend, EDataCal *cal, GCancellable *cancellable, const gchar *calobj, GSList **users, gchar **modified_calobj, GError **perror);
 /* timezone and free_busy not implemented */
@@ -93,7 +94,7 @@ static void gtasks_write_task_to_component (ECalComponent *comp, GDataTasksTask 
 static void gtasks_notify_online_cb (ECalBackend *backend, GParamSpec *pspec);
 static gboolean gtasks_begin_retrieval_cb (GIOSchedulerJob *job, GCancellable *cancellable, ECalBackendGTasks *backend);
 static gboolean backend_is_authorized (ECalBackend *backend);
-static gboolean gtasks_begin_retrieval_cb (GIOSchedulerJob *job, GCancellable *cancellable, ECalBackendGTasks *backend);
+gboolean gtasks_load (ECalBackendGTasks *cbgtasks, GCancellable *cancellable, GError **error);
 
 /* ************************************************ GObject stuff */
 
@@ -180,27 +181,15 @@ gtasks_get_backend_property (ECalBackend *backend,
 	g_return_val_if_fail (prop_name != NULL, FALSE);
 
 	if (g_str_equal (prop_name, CLIENT_BACKEND_PROPERTY_CAPABILITIES)) {
-		ESourceGTasks *extension;
-		ESource *source;
 		GString *caps;
-		gchar *usermail;
-		const gchar *extension_name;
 
 		caps = g_string_new (
 			CAL_STATIC_CAPABILITY_NO_THISANDFUTURE ","
 			CAL_STATIC_CAPABILITY_NO_THISANDPRIOR ","
-			CAL_STATIC_CAPABILITY_REFRESH_SUPPORTED);
-
-		usermail = get_usermail (E_CAL_BACKEND (backend));
-		if (!usermail || !*usermail)
-			g_string_append (caps, "," CAL_STATIC_CAPABILITY_NO_EMAIL_ALARMS);
-		g_free (usermail);
+			CAL_STATIC_CAPABILITY_REFRESH_SUPPORTED ","
+			CAL_STATIC_CAPABILITY_NO_EMAIL_ALARMS);
 
 		return g_string_free (caps, FALSE);
-
-	} else if (g_str_equal (prop_name, CAL_BACKEND_PROPERTY_CAL_EMAIL_ADDRESS) ||
-		   g_str_equal (prop_name, CAL_BACKEND_PROPERTY_ALARM_EMAIL_ADDRESS)) {
-		return get_usermail (E_CAL_BACKEND (backend));
 
 	} else if (g_str_equal (prop_name, CAL_BACKEND_PROPERTY_DEFAULT_OBJECT)) {
 		ECalComponent *comp;
@@ -292,9 +281,7 @@ initialize_backend (ECalBackendGTasks *cbgtasks,
 {
 	ECalBackend              *backend;
 	ESource                  *source;
-	gsize                     len;
 	const gchar              *cache_dir;
-	const gchar              *extension_name;
 
 	backend = E_CAL_BACKEND (cbgtasks);
 	cache_dir = e_cal_backend_get_cache_dir (backend);
@@ -325,39 +312,48 @@ initialize_backend (ECalBackendGTasks *cbgtasks,
 gboolean
 gtasks_load (ECalBackendGTasks *cbgtasks, GCancellable *cancellable, GError **error)
 {	
-	g_return_val_if_fail (backend_is_authorized (cbgtasks), FALSE);
-
-	GDataFeed *feed = gdata_tasks_get_tasks_by_tasklist_id (cbgtasks->priv->service, cbgtasks->priv->tasklist_id, NULL, cancellable, NULL, NULL, error);
+	// FIXME needs GError for passing to gdata for querying
+	g_return_val_if_fail (backend_is_authorized (E_CAL_BACKEND (cbgtasks)), FALSE);
+	GDataFeed *feed;
+	feed = gdata_tasks_service_query_tasks_by_tasklist_id (GDATA_TASKS_SERVICE (cbgtasks->priv->service), cbgtasks->priv->tasklist_id, NULL, cancellable, NULL, NULL, NULL);
 
 	g_return_val_if_fail (feed != NULL && GDATA_IS_FEED (feed), FALSE);
 
-	GList *entries = gdata_feed_get_entries (feed);
+	GList *entries;
+	entries = gdata_feed_get_entries (feed);
 
 	/* Currently stored objects */
+	GSList *old_objects;
 	old_objects = e_cal_backend_store_get_components (cbgtasks->priv->store);
 
 	/* So we can return at the start of linked lists when needed */
-	GSList *old_objects_start = old_objects;
-	GList *entries_start = entries;
+	GSList *old_objects_start;
+	old_objects_start = old_objects;
+	GList *entries_start;
+	entries_start = entries;
 	
 	while (entries != NULL) {
 		/* indicates if we find task in old_objects */
 		gboolean found = FALSE;
-		GDataTasksTask *task = GDATA_TASKS_TASK (entries->data);
+		GDataTasksTask *task;
+		task = GDATA_TASKS_TASK (entries->data);
 		while (old_objects != NULL) {
-				ECalComponent *old_component = E_CAL_COMPONENT (old_objects->data);
+				ECalComponent *old_component;
+				old_component = E_CAL_COMPONENT (old_objects->data);
 				const gchar *old_component_id;
-				e_cal_component_get_uid (old_component, old_component_id);
-				if (g_str_equal (gdata_entry_get_id (GDATA_ENTRY (task)), old_component_id) {
+				e_cal_component_get_uid (old_component, &old_component_id);
+				if (g_str_equal (gdata_entry_get_id (GDATA_ENTRY (task)), old_component_id)) {
 					found = TRUE;
 					// we have to get that value out first
-					const icaltimetype *old_time = g_new (icaltimetype, 1);
-					e_cal_component_get_last_modified (comp, &t);
-					const icaltimetype new_time = icaltime_from_timet (gdata_entry_get_updated (GDATA_ENTRY (task)), 1);
+					const icaltimetype old_time;
+					e_cal_component_get_last_modified (old_component, &old_time);
+					const icaltimetype new_time;
+					new_time = icaltime_from_timet (gdata_entry_get_updated (GDATA_ENTRY (task)), 1);
 					if (icaltime_compare (new_time, old_time) == 0)
 						break;
 					/* if they are not equal, we sync from server */
-					ECalComponent *new_component = e_cal_component_new (void);
+					ECalComponent *new_component;
+					new_component = e_cal_component_new ();
 					gtasks_write_task_to_component (new_component, task);
 					e_cal_backend_notify_component_modified (cbgtasks, old_component, new_component);
 				}
@@ -365,7 +361,8 @@ gtasks_load (ECalBackendGTasks *cbgtasks, GCancellable *cancellable, GError **er
 		}
 		/* if we haven't found server entry, we create new one */
 		if (found == FALSE) {
-			ECalComponent *new_component = e_cal_component_new (void);
+			ECalComponent *new_component;
+			new_component = e_cal_component_new ();
 			gtasks_write_task_to_component (new_component, task);
 			// add it to storage
 			e_cal_backend_store_put_component (cbgtasks->priv->store, new_component);
@@ -381,11 +378,15 @@ gtasks_load (ECalBackendGTasks *cbgtasks, GCancellable *cancellable, GError **er
 	old_objects = old_objects_start;
 	entries = entries_start;
 	while (old_objects != NULL) {
-		ECalComponent *old_component = E_CAL_COMPONENT (old_objects->data);
+		ECalComponent *old_component;
+		old_component = E_CAL_COMPONENT (old_objects->data);
 		gboolean found = FALSE;
 		while (entries != NULL) {
-			GDataTasksTask *task = GDATA_TASKS_TASK (entries->data);
-			if (g_str_equal (gdata_entry_get_id (GDATA_ENTRY (task)), old_component_id) {
+			GDataTasksTask *task;
+			task = GDATA_TASKS_TASK (entries->data);
+			const gchar *old_component_id;
+			e_cal_component_get_uid (old_component, &old_component_id);
+			if (g_str_equal (gdata_entry_get_id (GDATA_ENTRY (task)), old_component_id)) {
 				found = TRUE;
 				break;
 			}
@@ -393,7 +394,7 @@ gtasks_load (ECalBackendGTasks *cbgtasks, GCancellable *cancellable, GError **er
 		}
 		if (found == FALSE) {
 			ECalComponentId *id;
-			id = e_cal_component_get_id (old_comp);
+			id = e_cal_component_get_id (old_component);
 			e_cal_backend_store_remove_component (cbgtasks->priv->store, id->uid, id->rid);
 			e_cal_backend_notify_component_removed (E_CAL_BACKEND (cbgtasks), id, old_component, NULL);
 		}
@@ -451,7 +452,7 @@ gtasks_do_open (ECalBackendSync *backend,
 	cbgtasks = E_CAL_BACKEND_GTASKS (backend);
 
 	/* FIXME what is loaded */
-	if (!cbgtasks->priv->loaded && !initialize_backend (cbgtasks, perror))
+	if (!cbgtasks->priv->loaded && !initialize_backend (cbgtasks, error))
 		return;
 
 	online = e_backend_get_online (E_BACKEND (backend));
@@ -464,7 +465,7 @@ gtasks_do_open (ECalBackendSync *backend,
 	if (online) {
 		GError *local_error = NULL;
 		/* Let's try to create authorizer */
-		if (priv->authorizer == NULL) {
+		if (cbgtasks->priv->authorizer == NULL) {
 			ESource *source;
 			ESourceAuthentication *extension;
 			EGDataOAuth2Authorizer *authorizer;
@@ -478,23 +479,23 @@ gtasks_do_open (ECalBackendSync *backend,
 	
 			if (g_strcmp0 (method, "OAuth2") == 0) {
 				authorizer = e_gdata_oauth2_authorizer_new (source);
-				priv->authorizer = GDATA_AUTHORIZER (authorizer);
+				cbgtasks->priv->authorizer = GDATA_AUTHORIZER (authorizer);
 			}
 	
 			g_free (method);
 		}
 
-		if (priv->service == NULL) {
+		if (cbgtasks->priv->service == NULL) {
 			GDataTasksService *contacts_service;
-			contacts_service = gdata_tasks_service_new (priv->authorizer);
-			priv->service = GDATA_SERVICE (contacts_service);
+			contacts_service = gdata_tasks_service_new (cbgtasks->priv->authorizer);
+			cbgtasks->priv->service = GDATA_SERVICE (contacts_service);
 		}
 		/* Refresh authorization - if it fails, return without opening tasks */
-		if(gdata_authorizer_refresh_authorization (priv->authorizer, cancellable, &local_error))
+		if(gdata_authorizer_refresh_authorization (cbgtasks->priv->authorizer, cancellable, &local_error))
 			return;
 	}
 	
-	if (online && gdata_service_is_authorized (cbgtasks->self->service)) {
+	if (online && gdata_service_is_authorized (cbgtasks->priv->service)) {
 		cbgtasks->priv->opened  = open_tasks (cbgtasks, cancellable, &local_error);
 		// FIXME how we get which account we need? How do we get account id?
 		// If we fail due of auth, what we do then?
@@ -552,7 +553,7 @@ gtasks_get_object (ECalBackendSync *backend,
 
 	comp = e_cal_backend_store_get_components_by_uid_as_ical_string (cbgtasks->priv->store, uid);
 
-	if (!*comp)
+	if (!comp)
 		g_propagate_error (error, EDC_ERROR (ObjectNotFound));
 
 	*object = e_cal_component_get_as_string (comp);
@@ -663,6 +664,7 @@ gtasks_modify_objects (ECalBackendSync *backend,
                   EDataCal *cal,
                   GCancellable *cancellable,
                   const GSList *in_calobjs,
+                  ECalObjModType mod,
                   GSList **uids,
                   GSList **new_components,
                   GError **error)
@@ -677,6 +679,7 @@ gtasks_remove_objects (ECalBackendSync *backend,
                   EDataCal *cal,
                   GCancellable *cancellable,
                   const GSList *in_calobjs,
+                  ECalObjModType mod,
                   GSList **uids,
                   GSList **new_components,
                   GError **error)
@@ -757,16 +760,17 @@ gtasks_sync_store_cb (GIOSchedulerJob *job,
                     GCancellable *cancellable,
                     ECalBackendGTasks *cbgtasks)
 {
+	// FIXME needs to declare GError and listen if there's any while procesing query
 	g_return_val_if_fail (backend_is_authorized (cbgtasks), FALSE);
 
-	GDataFeed *feed = gdata_tasks_get_tasks_by_tasklist_id (cbgtasks->priv->service, cbgtasks->priv->tasklist_id, NULL, cancellable, NULL, NULL, error);
+	GDataFeed *feed = gdata_tasks_service_query_tasks_by_tasklist_id (GDATA_TASKS_SERVICE (cbgtasks->priv->service), cbgtasks->priv->tasklist_id, NULL, cancellable, NULL, NULL, NULL);
 
 	g_return_val_if_fail (feed != NULL && GDATA_IS_FEED (feed), FALSE);
 
 	GList *entries = gdata_feed_get_entries (feed);
 
 	/* Currently stored objects */
-	old_objects = e_cal_backend_store_get_components (cbgtasks->priv->store);
+	GSList *old_objects = e_cal_backend_store_get_components (cbgtasks->priv->store);
 
 	/* So we can return at the start of linked lists when needed */
 	GSList *old_objects_start = old_objects;
@@ -779,12 +783,12 @@ gtasks_sync_store_cb (GIOSchedulerJob *job,
 		while (old_objects != NULL) {
 				ECalComponent *old_component = E_CAL_COMPONENT (old_objects->data);
 				const gchar *old_component_id;
-				e_cal_component_get_uid (old_component, old_component_id);
-				if (g_str_equal (gdata_entry_get_id (GDATA_ENTRY (task)), old_component_id) {
+				e_cal_component_get_uid (old_component, &old_component_id);
+				if (g_str_equal (gdata_entry_get_id (GDATA_ENTRY (task)), old_component_id)) {
 					found = TRUE;
 					// we have to get that value out first
 					const icaltimetype *old_time = g_new (icaltimetype, 1);
-					e_cal_component_get_last_modified (comp, &t);
+					e_cal_component_get_last_modified (old_component, &old_time);
 					const icaltimetype new_time = icaltime_from_timet (gdata_entry_get_updated (GDATA_ENTRY (task)), 1);
 					if (icaltime_compare (new_time, old_time) == 0)
 						break;
@@ -817,7 +821,9 @@ gtasks_sync_store_cb (GIOSchedulerJob *job,
 		gboolean found = FALSE;
 		while (entries != NULL) {
 			GDataTasksTask *task = GDATA_TASKS_TASK (entries->data);
-			if (g_str_equal (gdata_entry_get_id (GDATA_ENTRY (task)), old_component_id) {
+			const gchar *old_component_id;
+			e_cal_component_get_uid (old_component, &old_component_id);
+			if (g_str_equal (gdata_entry_get_id (GDATA_ENTRY (task)), old_component_id)) {
 				found = TRUE;
 				break;
 			}
@@ -825,41 +831,42 @@ gtasks_sync_store_cb (GIOSchedulerJob *job,
 		}
 		if (found == FALSE) {
 			ECalComponentId *id;
-			id = e_cal_component_get_id (old_comp);
+			id = e_cal_component_get_id (old_component);
 			e_cal_backend_store_remove_component (cbgtasks->priv->store, id->uid, id->rid);
 			e_cal_backend_notify_component_removed (E_CAL_BACKEND (cbgtasks), id, old_component, NULL);
 		}
 		entries = entries_start;
 		old_objects = old_objects->next;
 	}
-	
-	return TRUE;
 }
 
 static void
 gtasks_write_task_to_component (ECalComponent *comp, GDataTasksTask *task) {
 	/* Description */
 	ECalComponentText *desc = g_new (ECalComponentText, 1);
-	desc->value = g_strdup (gdata_tasks_get_notes (task));
+	desc->value = g_strdup (gdata_tasks_task_get_notes (task));
 	GSList *desc_list = NULL;
 	g_slist_append (desc_list, desc);
 	e_cal_component_set_description_list (comp, desc_list);
 
 	/* Summary */
 	ECalComponentText *summary = g_new (ECalComponentText, 1);
-	summary->value = g_strdup (gdata_tasks_get_title (task));
+	summary->value = g_strdup (gdata_entry_get_title (GDATA_ENTRY (task)));
 	e_cal_component_set_summary (comp, summary);
 
 	/* Completed */
-	if (gdata_tasks_get_completed (tasks) != -1)
-	e_cal_component_set_completed (comp, icaltime_from_timet_with_zone (gdata_task_get_completed (task), 0, 0));
+	ECalComponentDateTime *datetime;
+	datetime = g_new (ECalComponentDateTime, 1);
+	datetime->value = icaltime_from_timet_with_zone (gdata_tasks_task_get_completed (task), 0, 0);
+	if (gdata_tasks_task_get_completed (task) != -1)
+		e_cal_component_set_completed (comp, datetime);
 
 	/* Due */
-	if (gdata_tasks_get_due (tasks) != -1)
-	e_cal_component_set_due (comp, icaltime_from_timet_with_zone (gdata_task_get_due (task), 0, 0));
+	if (gdata_tasks_task_get_due (task) != -1)
+		e_cal_component_set_due (comp, icaltime_from_timet_with_zone (gdata_tasks_task_get_due (task), 0, 0));
 
 	/* Status */
-	if (g_str_equal (gdata_tasks_get_status (task), "completed")) {
+	if (g_str_equal (gdata_tasks_task_get_status (task), "completed")) {
 	e_cal_component_set_status (comp, ICAL_STATUS_COMPLETED);
 	} else {
 		// FIXME shouldn't this be NONE? Verify
@@ -874,6 +881,7 @@ gtasks_notify_online_cb (ECalBackend *backend,
 {
 	ECalBackendGTasks *cbgtasks;
 	gboolean online;
+	gboolean loaded;
 
 	cbgtasks = E_CAL_BACKEND_GTASKS (backend);
 
@@ -909,7 +917,7 @@ gtasks_begin_retrieval_cb (GIOSchedulerJob *job,
 
 	backend->priv->is_loading = TRUE;
 
-	open_tasks (backend, cancellable, uri, &error);
+	open_tasks (backend, cancellable, &error);
 
 	backend->priv->is_loading = FALSE;
 
