@@ -1,11 +1,5 @@
 ecal_backend_LTLIBRARIES = libecalbackendgtasks.la
 
-if HAVE_GOA
-GOA_SOURCES = \
-	e-gdata-goa-authorizer.c \
-	e-gdata-goa-authorizer.h
-endif
-
 libecalbackendgtasks_la_CPPFLAGS = \
 	$(AM_CPPFLAGS)	\
 	-I$(top_srcdir) \
@@ -22,7 +16,9 @@ libecalbackendgtasks_la_CPPFLAGS = \
 libecalbackendgtasks_la_SOURCES = \
 	e-cal-backend-gtasks-factory.c \
 	e-cal-backend-gtasks.c \
-	e-cal-backend-gtasks.h
+	e-cal-backend-gtasks.h \
+	$(top_builddir)/addressbook/backends/google/e-gdata-oauth2-authorizer.c \
+	$(top_builddir)/addressbook/backends/google/e-gdata-oauth2-authorizer.h
 
 libecalbackendgtasks_la_LIBADD = \
 	$(top_builddir)/calendar/libedata-cal/libedata-cal-1.2.la \
