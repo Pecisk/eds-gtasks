@@ -327,7 +327,7 @@ gtasks_load (ECalBackendGTasks *cbgtasks, GCancellable *cancellable, GError **er
 {	
 	g_return_val_if_fail (backend_is_authorized (cbgtasks), FALSE);
 
-	GDataFeed *feed = gdata_tasks_get_tasks_by_tasklist_id (cbgtasks->priv->service, cbgtasks->priv->tasklist_id, cancellable, error);
+	GDataFeed *feed = gdata_tasks_get_tasks_by_tasklist_id (cbgtasks->priv->service, cbgtasks->priv->tasklist_id, NULL, cancellable, error);
 
 	g_return_val_if_fail (feed != NULL && GDATA_IS_FEED (feed), FALSE);
 
@@ -759,7 +759,7 @@ gtasks_sync_store_cb (GIOSchedulerJob *job,
 {
 	g_return_val_if_fail (backend_is_authorized (cbgtasks), FALSE);
 
-	GDataFeed *feed = gdata_tasks_get_tasks_by_tasklist_id (cbgtasks->priv->service, cbgtasks->priv->tasklist_id, cancellable, error);
+	GDataFeed *feed = gdata_tasks_get_tasks_by_tasklist_id (cbgtasks->priv->service, cbgtasks->priv->tasklist_id, NULL, cancellable, error);
 
 	g_return_val_if_fail (feed != NULL && GDATA_IS_FEED (feed), FALSE);
 
