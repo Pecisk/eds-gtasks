@@ -789,7 +789,7 @@ gtasks_sync_store_cb (GIOSchedulerJob *job,
 					if (icaltime_compare (new_time, old_time) == 0)
 						break;
 					/* if they are not equal, we sync from server */
-					ECalComponent *new_component = e_cal_component_new (void);
+					ECalComponent *new_component = e_cal_component_new ();
 					gtasks_write_task_to_component (new_component, task);
 					e_cal_backend_notify_component_modified (cbgtasks, old_component, new_component);
 				}
@@ -797,7 +797,7 @@ gtasks_sync_store_cb (GIOSchedulerJob *job,
 		}
 		/* if we haven't found server entry, we create new one */
 		if (found == FALSE) {
-			ECalComponent *new_component = e_cal_component_new (void);
+			ECalComponent *new_component = e_cal_component_new ();
 			gtasks_write_task_to_component (new_component, task);
 			// add it to storage
 			e_cal_backend_store_put_component (cbgtasks->priv->store, new_component);
