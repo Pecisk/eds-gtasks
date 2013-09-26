@@ -14,9 +14,9 @@
  *
  *
  * Authors:
- *		Christian Kellner <gicmo@gnome.org>
+ *		Peteris Krisjanis <pecisk@gmail.com>
  *
- * Copyright (C) 1999-2008 Novell, Inc. (www.novell.com)
+ * Copyright (C) 2013 Peteris Krisjanis
  *
  */
 

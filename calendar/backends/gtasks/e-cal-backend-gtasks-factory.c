@@ -1,5 +1,5 @@
 /*
- * Evolution calendar - caldav backend factory
+ * Evolution calendar - google tasks backend factory
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -16,9 +16,9 @@
  *
  *
  * Authors:
- *		Christian Kellner <gicmo@gnome.org>
+ *		Peteris Krisjanis <pecisk@gmail.com>
  *
- * Copyright (C) 1999-2008 Novell, Inc. (www.novell.com)
+ * Copyright (C) 2013 Peteris Krisjanis
  *
  */
 

@@ -170,6 +170,44 @@ google_backend_contacts_update_auth_method (ESource *source)
 }
 
 static void
+google_backend_tasks_update_auth_method (ESource *source)
+{
+	EOAuth2Support *oauth2_support;
+	ESourceAuthentication *auth_extension;
+	ESourceWebdav *webdav_extension;
+	const gchar *extension_name;
+	const gchar *host;
+	const gchar *method;
+	const gchar *path_format;
+	gchar *path;
+	gchar *user;
+
+	oauth2_support = e_server_side_source_ref_oauth2_support (
+		E_SERVER_SIDE_SOURCE (source));
+
+	/* The host name and WebDAV resource path depend on the
+	 * authentication method used, so update those here too. */
+
+	if (oauth2_support != NULL) {
+		method = "OAuth2";
+		host = GOOGLE_CALDAV_V2_HOST;
+		path_format = GOOGLE_CALDAV_V2_PATH;
+	} else {
+		method = "plain/password";
+		host = GOOGLE_CALDAV_V1_HOST;
+		path_format = GOOGLE_CALDAV_V1_PATH;
+	}
+
+	extension_name = E_SOURCE_EXTENSION_AUTHENTICATION;
+	auth_extension = e_source_get_extension (source, extension_name);
+	e_source_authentication_set_host (auth_extension, host);
+	e_source_authentication_set_method (auth_extension, method);
+
+	g_clear_object (&oauth2_support);
+}
+
+
+static void
 google_backend_add_calendar (ECollectionBackend *backend)
 {
 	ESource *source;
@@ -364,6 +402,7 @@ google_backend_populate (ECollectionBackend *backend)
 		google_backend_add_contacts (backend);
 	g_list_free_full (list, (GDestroyNotify) g_object_unref);
 
+	google_backend_add_tasks (backend);
 	/* Chain up to parent's populate() method. */
 	E_COLLECTION_BACKEND_CLASS (e_google_backend_parent_class)->
 		populate (backend);
@@ -385,6 +424,10 @@ google_backend_dup_resource_id (ECollectionBackend *backend,
 	extension_name = E_SOURCE_EXTENSION_ADDRESS_BOOK;
 	if (e_source_has_extension (child_source, extension_name))
 		return g_strdup (GOOGLE_CONTACTS_RESOURCE_ID);
+
+	extension_name = E_SOURCE_EXTENSION_TASK_LIST;
+	if (e_source_has_extension (child_source, extension_name))
+		return g_strdup (GOOGLE_TASKS_RESOURCE_ID);
 
 	return NULL;
 }
@@ -465,6 +508,14 @@ google_backend_child_added (ECollectionBackend *backend,
 			NULL);
 	}
 
+	extension_name = E_SOURCE_EXTENSION_TASK_LIST;
+	if (e_source_has_extension (child_source, extension_name)) {
+		google_backend_tasks_update_auth_method (child_source);
+		g_signal_connect (
+			child_source, "notify::oauth2-support",
+			G_CALLBACK (google_backend_tasks_update_auth_method),
+			NULL);
+	}
 	/* Chain up to parent's child_added() method. */
 	E_COLLECTION_BACKEND_CLASS (e_google_backend_parent_class)->
 		child_added (backend, child_source);

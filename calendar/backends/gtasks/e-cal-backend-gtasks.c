@@ -1,5 +1,5 @@
 /*
- * Evolution calendar - caldav backend
+ * Evolution calendar - google tasks backend
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -16,9 +16,9 @@
  *
  *
  * Authors:
- *		Christian Kellner <gicmo@gnome.org>
+ *		Peteris Krisjanis <pecisk@gmail.com>
  *
- * Copyright (C) 1999-2008 Novell, Inc. (www.novell.com)
+ * Copyright (C) 2013 Peteris Krisjanis
  *
  */
 
@@ -138,7 +138,7 @@ e_cal_backend_gtasks_class_init (ECalBackendGTasksClass *class)
 
 	sync_class->get_object_sync			= gtasks_get_object;
 	sync_class->get_object_list_sync	= gtasks_get_object_list;
-	// returns E_CLIENT_ERROR_NOT_SUPPORTED
+	/* returns E_CLIENT_ERROR_NOT_SUPPORTED */
 	sync_class->add_timezone_sync		= gtasks_add_timezone;
 	sync_class->get_free_busy_sync		= gtasks_get_free_busy;
 }
@@ -318,7 +318,7 @@ gtasks_load (ECalBackendGTasks *cbgtasks, GCancellable *cancellable, GError **er
 	GDataTasksTasklist *tasklist;
 	const gchar *tasklist_id;
 
-	// FIXME needs GError for passing to gdata for querying
+	/* FIXME needs GError for passing to gdata for querying */
 	tasklist_id = cbgtasks->priv->tasklist_id;
 	tasklist = gdata_tasks_tasklist_new (tasklist_id);
 
@@ -357,7 +357,7 @@ gtasks_load (ECalBackendGTasks *cbgtasks, GCancellable *cancellable, GError **er
 					struct icaltimetype new_time, old_comp_last_modified, *itm = NULL;
 					ECalComponent *new_component;
 					found = TRUE;
-					// we have to get that value out first
+
 					e_cal_component_get_last_modified (old_component, &itm);
 					old_comp_last_modified = *itm;
 					new_time = icaltime_from_timet (gdata_entry_get_updated (GDATA_ENTRY (task)), 1);
@@ -376,9 +376,9 @@ gtasks_load (ECalBackendGTasks *cbgtasks, GCancellable *cancellable, GError **er
 			ECalComponent *new_component;
 			new_component = e_cal_component_new ();
 			gtasks_write_task_to_component (new_component, task);
-			// add it to storage
+			/* add it to storage */
 			e_cal_backend_store_put_component (cbgtasks->priv->store, new_component);
-			// notify view that component is created
+			/* notify view that component is created */
 			e_cal_backend_notify_component_created (E_CAL_BACKEND (cbgtasks), new_component);
 		}
 
@@ -514,8 +514,8 @@ gtasks_do_open (ECalBackendSync *backend,
 	
 	if (online && gdata_service_is_authorized (cbgtasks->priv->service)) {
 		cbgtasks->priv->opened  = open_tasks (cbgtasks, cancellable, &local_error);
-		// FIXME how we get which account we need? How do we get account id?
-		// If we fail due of auth, what we do then?
+		/* FIXME how we get which account we need? How do we get account id? */
+		/* If we fail due of auth, what we do then? */
 		if (cbgtasks->priv->opened)
 			e_cal_backend_set_writable (E_CAL_BACKEND (cbgtasks), FALSE);
 	}
@@ -724,8 +724,6 @@ gtasks_send_objects (ECalBackendSync *backend,
                      gchar **modified_calobj,
                      GError **error)
 {
-	//*users = NULL;
-	//*modified_calobj = g_strdup (calobj);
 	GError *local_error = NULL;
 	g_set_error (&local_error, E_CLIENT_ERROR, E_CLIENT_ERROR_NOT_SUPPORTED, "Google Tasks backend doesn't sending objects.");
 	g_propagate_error (error, local_error);
@@ -957,7 +955,6 @@ gtasks_begin_retrieval_cb (GIOSchedulerJob *job,
                     GCancellable *cancellable,
                     ECalBackendGTasks *backend)
 {
-	//const gchar *uri;
 	GError *error = NULL;
 
 	if (!e_backend_get_online (E_BACKEND (backend)))
@@ -972,7 +969,7 @@ gtasks_begin_retrieval_cb (GIOSchedulerJob *job,
 
 	backend->priv->is_loading = FALSE;
 
-	///* Ignore cancellations. */
+	/* Ignore cancellations. */
 	if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
 		g_error_free (error);
 	} else if (error != NULL) {
