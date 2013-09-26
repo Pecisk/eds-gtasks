@@ -174,33 +174,20 @@ google_backend_tasks_update_auth_method (ESource *source)
 {
 	EOAuth2Support *oauth2_support;
 	ESourceAuthentication *auth_extension;
-	ESourceWebdav *webdav_extension;
 	const gchar *extension_name;
-	const gchar *host;
 	const gchar *method;
-	const gchar *path_format;
-	gchar *path;
-	gchar *user;
 
 	oauth2_support = e_server_side_source_ref_oauth2_support (
 		E_SERVER_SIDE_SOURCE (source));
 
-	/* The host name and WebDAV resource path depend on the
-	 * authentication method used, so update those here too. */
-
 	if (oauth2_support != NULL) {
 		method = "OAuth2";
-		host = GOOGLE_CALDAV_V2_HOST;
-		path_format = GOOGLE_CALDAV_V2_PATH;
 	} else {
 		method = "plain/password";
-		host = GOOGLE_CALDAV_V1_HOST;
-		path_format = GOOGLE_CALDAV_V1_PATH;
 	}
 
 	extension_name = E_SOURCE_EXTENSION_AUTHENTICATION;
 	auth_extension = e_source_get_extension (source, extension_name);
-	e_source_authentication_set_host (auth_extension, host);
 	e_source_authentication_set_method (auth_extension, method);
 
 	g_clear_object (&oauth2_support);

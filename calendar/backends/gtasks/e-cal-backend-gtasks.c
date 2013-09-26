@@ -99,11 +99,12 @@ gboolean gtasks_load (ECalBackendGTasks *cbgtasks, GCancellable *cancellable, GE
 /* ************************************************ GObject stuff */
 
 static void
-e_cal_backend_gtasks_init (ECalBackendGTasks *gtasks)
+e_cal_backend_gtasks_init (ECalBackendGTasks *cbgtasks)
 {
-	gtasks->priv->loaded = FALSE;
-	gtasks->priv->opened = FALSE;
-	g_signal_connect (gtasks, "notify::online", G_CALLBACK (gtasks_notify_online_cb), NULL);
+	cbgtasks->priv = G_TYPE_INSTANCE_GET_PRIVATE (cbgtasks, E_TYPE_CAL_BACKEND_GTASKS, ECalBackendGTasksPrivate);
+	cbgtasks->priv->loaded = FALSE;
+	cbgtasks->priv->opened = FALSE;
+	g_signal_connect (cbgtasks, "notify::online", G_CALLBACK (gtasks_notify_online_cb), NULL);
 }
 
 static void
