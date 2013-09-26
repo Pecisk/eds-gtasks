@@ -288,7 +288,7 @@ initialize_backend (ECalBackendGTasks *cbgtasks,
 	source = e_backend_get_source (E_BACKEND (backend));
 
 	/* FIXME we should hook up tasklist id here */
-	cbgtasks->priv->tasklist_id = "tasklist-id";
+	cbgtasks->priv->tasklist_id = g_strdup ("tasklist-id");
 
 	if (!g_signal_handler_find (G_OBJECT (source), G_SIGNAL_MATCH_FUNC | G_SIGNAL_MATCH_DATA, 0, 0, NULL, gtasks_source_changed_cb, cbgtasks))
 		g_signal_connect (G_OBJECT (source), "changed", G_CALLBACK (gtasks_source_changed_cb), cbgtasks);
@@ -312,50 +312,62 @@ initialize_backend (ECalBackendGTasks *cbgtasks,
 gboolean
 gtasks_load (ECalBackendGTasks *cbgtasks, GCancellable *cancellable, GError **error)
 {	
-	// FIXME needs GError for passing to gdata for querying
-	g_return_val_if_fail (backend_is_authorized (E_CAL_BACKEND (cbgtasks)), FALSE);
 	GDataFeed *feed;
-	feed = gdata_tasks_service_query_tasks_by_tasklist_id (GDATA_TASKS_SERVICE (cbgtasks->priv->service), cbgtasks->priv->tasklist_id, NULL, cancellable, NULL, NULL, NULL);
+	GList *entries, *entries_start;
+	GSList *old_objects, *old_objects_start;
+	GDataTasksTasklist *tasklist;
+	const gchar *tasklist_id;
+
+	// FIXME needs GError for passing to gdata for querying
+	tasklist_id = cbgtasks->priv->tasklist_id;
+	tasklist = gdata_tasks_tasklist_new (tasklist_id);
+
+	g_return_val_if_fail (backend_is_authorized (E_CAL_BACKEND (cbgtasks)), FALSE);
+
+	feed = gdata_tasks_service_query_tasks (GDATA_TASKS_SERVICE (cbgtasks->priv->service), tasklist, NULL, cancellable, NULL, NULL, NULL);
 
 	g_return_val_if_fail (feed != NULL && GDATA_IS_FEED (feed), FALSE);
 
-	GList *entries;
+	/* Tasks from gt service */
 	entries = gdata_feed_get_entries (feed);
-
 	/* Currently stored objects */
-	GSList *old_objects;
 	old_objects = e_cal_backend_store_get_components (cbgtasks->priv->store);
-
 	/* So we can return at the start of linked lists when needed */
-	GSList *old_objects_start;
 	old_objects_start = old_objects;
-	GList *entries_start;
 	entries_start = entries;
-	
+
 	while (entries != NULL) {
 		/* indicates if we find task in old_objects */
 		gboolean found = FALSE;
 		GDataTasksTask *task;
+
 		task = GDATA_TASKS_TASK (entries->data);
+
 		while (old_objects != NULL) {
+				
 				ECalComponent *old_component;
+				const gchar *uid;
+				gchar *old_component_id;
+
 				old_component = E_CAL_COMPONENT (old_objects->data);
-				const gchar *old_component_id;
-				e_cal_component_get_uid (old_component, &old_component_id);
+				e_cal_component_get_uid (old_component, &uid);
+				old_component_id = g_strdup (uid);
+
 				if (g_str_equal (gdata_entry_get_id (GDATA_ENTRY (task)), old_component_id)) {
+					struct icaltimetype new_time, old_comp_last_modified, *itm = NULL;
+					ECalComponent *new_component;
 					found = TRUE;
 					// we have to get that value out first
-					const icaltimetype old_time;
-					e_cal_component_get_last_modified (old_component, &old_time);
-					const icaltimetype new_time;
+					e_cal_component_get_last_modified (old_component, &itm);
+					old_comp_last_modified = *itm;
 					new_time = icaltime_from_timet (gdata_entry_get_updated (GDATA_ENTRY (task)), 1);
-					if (icaltime_compare (new_time, old_time) == 0)
+					if (icaltime_compare (new_time, old_comp_last_modified) == 0)
 						break;
 					/* if they are not equal, we sync from server */
-					ECalComponent *new_component;
+					
 					new_component = e_cal_component_new ();
 					gtasks_write_task_to_component (new_component, task);
-					e_cal_backend_notify_component_modified (cbgtasks, old_component, new_component);
+					e_cal_backend_notify_component_modified (E_CAL_BACKEND (cbgtasks), old_component, new_component);
 				}
 			old_objects = old_objects->next;
 		}
@@ -379,13 +391,16 @@ gtasks_load (ECalBackendGTasks *cbgtasks, GCancellable *cancellable, GError **er
 	entries = entries_start;
 	while (old_objects != NULL) {
 		ECalComponent *old_component;
-		old_component = E_CAL_COMPONENT (old_objects->data);
 		gboolean found = FALSE;
+		old_component = E_CAL_COMPONENT (old_objects->data);
 		while (entries != NULL) {
 			GDataTasksTask *task;
+			const gchar *uid;
+			gchar *old_component_id;
+			
 			task = GDATA_TASKS_TASK (entries->data);
-			const gchar *old_component_id;
-			e_cal_component_get_uid (old_component, &old_component_id);
+			e_cal_component_get_uid (old_component, &uid);
+			old_component_id = g_strdup (uid);
 			if (g_str_equal (gdata_entry_get_id (GDATA_ENTRY (task)), old_component_id)) {
 				found = TRUE;
 				break;
@@ -401,7 +416,9 @@ gtasks_load (ECalBackendGTasks *cbgtasks, GCancellable *cancellable, GError **er
 		entries = entries_start;
 		old_objects = old_objects->next;
 	}
-	
+
+	g_object_unref (tasklist);
+	g_object_unref (feed);
 	return TRUE;
 }
 
@@ -541,7 +558,6 @@ gtasks_get_object (ECalBackendSync *backend,
                    GError **error)
 {
 	ECalBackendGTasks *cbgtasks;
-	ECalComponent *comp = NULL;
 	cbgtasks = E_CAL_BACKEND_GTASKS (backend);
 
 	*object = NULL;
@@ -551,12 +567,10 @@ gtasks_get_object (ECalBackendSync *backend,
 		return;
 	}
 
-	comp = e_cal_backend_store_get_components_by_uid_as_ical_string (cbgtasks->priv->store, uid);
+	*object = e_cal_backend_store_get_components_by_uid_as_ical_string (cbgtasks->priv->store, uid);
 
-	if (!comp)
+	if (!object)
 		g_propagate_error (error, EDC_ERROR (ObjectNotFound));
-
-	*object = e_cal_component_get_as_string (comp);
 }
 
 static void
@@ -760,48 +774,69 @@ gtasks_sync_store_cb (GIOSchedulerJob *job,
                     GCancellable *cancellable,
                     ECalBackendGTasks *cbgtasks)
 {
-	// FIXME needs to declare GError and listen if there's any while procesing query
-	g_return_val_if_fail (backend_is_authorized (cbgtasks), FALSE);
+	GDataFeed *feed;
+	GList *entries, *entries_start;
+	GSList *old_objects, *old_objects_start;
+	GDataTasksTasklist *tasklist;
+	const gchar *tasklist_id;
 
-	GDataFeed *feed = gdata_tasks_service_query_tasks_by_tasklist_id (GDATA_TASKS_SERVICE (cbgtasks->priv->service), cbgtasks->priv->tasklist_id, NULL, cancellable, NULL, NULL, NULL);
+	// FIXME needs GError for passing to gdata for querying
+	tasklist_id = cbgtasks->priv->tasklist_id;
+	tasklist = gdata_tasks_tasklist_new (tasklist_id);
 
-	g_return_val_if_fail (feed != NULL && GDATA_IS_FEED (feed), FALSE);
+	g_return_if_fail (backend_is_authorized (E_CAL_BACKEND (cbgtasks)));
 
-	GList *entries = gdata_feed_get_entries (feed);
+	feed = gdata_tasks_service_query_tasks (GDATA_TASKS_SERVICE (cbgtasks->priv->service), tasklist, NULL, cancellable, NULL, NULL, NULL);
 
+	g_return_if_fail (feed != NULL && GDATA_IS_FEED (feed));
+
+	/* Tasks from gt service */
+	entries = gdata_feed_get_entries (feed);
 	/* Currently stored objects */
-	GSList *old_objects = e_cal_backend_store_get_components (cbgtasks->priv->store);
-
+	old_objects = e_cal_backend_store_get_components (cbgtasks->priv->store);
 	/* So we can return at the start of linked lists when needed */
-	GSList *old_objects_start = old_objects;
-	GList *entries_start = entries;
-	
+	old_objects_start = old_objects;
+	entries_start = entries;
+
 	while (entries != NULL) {
 		/* indicates if we find task in old_objects */
 		gboolean found = FALSE;
-		GDataTasksTask *task = GDATA_TASKS_TASK (entries->data);
+		GDataTasksTask *task;
+
+		task = GDATA_TASKS_TASK (entries->data);
+
 		while (old_objects != NULL) {
-				ECalComponent *old_component = E_CAL_COMPONENT (old_objects->data);
-				const gchar *old_component_id;
-				e_cal_component_get_uid (old_component, &old_component_id);
+				
+				ECalComponent *old_component;
+				const gchar *uid;
+				gchar *old_component_id;
+
+				old_component = E_CAL_COMPONENT (old_objects->data);
+				e_cal_component_get_uid (old_component, &uid);
+				old_component_id = g_strdup (uid);
+
 				if (g_str_equal (gdata_entry_get_id (GDATA_ENTRY (task)), old_component_id)) {
+					struct icaltimetype new_time, old_comp_last_modified, *itm = NULL;
+					ECalComponent *new_component;
 					found = TRUE;
 					// we have to get that value out first
-					const icaltimetype *old_time = g_new (icaltimetype, 1);
-					e_cal_component_get_last_modified (old_component, &old_time);
-					const icaltimetype new_time = icaltime_from_timet (gdata_entry_get_updated (GDATA_ENTRY (task)), 1);
-					if (icaltime_compare (new_time, old_time) == 0)
+					e_cal_component_get_last_modified (old_component, &itm);
+					old_comp_last_modified = *itm;
+					new_time = icaltime_from_timet (gdata_entry_get_updated (GDATA_ENTRY (task)), 1);
+					if (icaltime_compare (new_time, old_comp_last_modified) == 0)
 						break;
 					/* if they are not equal, we sync from server */
-					ECalComponent *new_component = e_cal_component_new ();
+					
+					new_component = e_cal_component_new ();
 					gtasks_write_task_to_component (new_component, task);
-					e_cal_backend_notify_component_modified (cbgtasks, old_component, new_component);
+					e_cal_backend_notify_component_modified (E_CAL_BACKEND (cbgtasks), old_component, new_component);
 				}
 			old_objects = old_objects->next;
 		}
 		/* if we haven't found server entry, we create new one */
 		if (found == FALSE) {
-			ECalComponent *new_component = e_cal_component_new ();
+			ECalComponent *new_component;
+			new_component = e_cal_component_new ();
 			gtasks_write_task_to_component (new_component, task);
 			// add it to storage
 			e_cal_backend_store_put_component (cbgtasks->priv->store, new_component);
@@ -817,12 +852,17 @@ gtasks_sync_store_cb (GIOSchedulerJob *job,
 	old_objects = old_objects_start;
 	entries = entries_start;
 	while (old_objects != NULL) {
-		ECalComponent *old_component = E_CAL_COMPONENT (old_objects->data);
+		ECalComponent *old_component;
 		gboolean found = FALSE;
+		old_component = E_CAL_COMPONENT (old_objects->data);
 		while (entries != NULL) {
-			GDataTasksTask *task = GDATA_TASKS_TASK (entries->data);
-			const gchar *old_component_id;
-			e_cal_component_get_uid (old_component, &old_component_id);
+			GDataTasksTask *task;
+			const gchar *uid;
+			gchar *old_component_id;
+			
+			task = GDATA_TASKS_TASK (entries->data);
+			e_cal_component_get_uid (old_component, &uid);
+			old_component_id = g_strdup (uid);
 			if (g_str_equal (gdata_entry_get_id (GDATA_ENTRY (task)), old_component_id)) {
 				found = TRUE;
 				break;
@@ -838,32 +878,43 @@ gtasks_sync_store_cb (GIOSchedulerJob *job,
 		entries = entries_start;
 		old_objects = old_objects->next;
 	}
+
+	g_object_unref (tasklist);
+	g_object_unref (feed);
 }
 
 static void
 gtasks_write_task_to_component (ECalComponent *comp, GDataTasksTask *task) {
-	/* Description */
-	ECalComponentText *desc = g_new (ECalComponentText, 1);
-	desc->value = g_strdup (gdata_tasks_task_get_notes (task));
 	GSList *desc_list = NULL;
-	g_slist_append (desc_list, desc);
+	ECalComponentText desc;
+	ECalComponentText summary;
+
+	/* Description */	
+	desc.value = g_strdup (gdata_tasks_task_get_notes (task));
+	desc_list = g_slist_append (desc_list, &desc);
 	e_cal_component_set_description_list (comp, desc_list);
 
 	/* Summary */
-	ECalComponentText *summary = g_new (ECalComponentText, 1);
-	summary->value = g_strdup (gdata_entry_get_title (GDATA_ENTRY (task)));
-	e_cal_component_set_summary (comp, summary);
+	summary.value = g_strdup (gdata_entry_get_title (GDATA_ENTRY (task)));
+	e_cal_component_set_summary (comp, &summary);
 
 	/* Completed */
-	ECalComponentDateTime *datetime;
-	datetime = g_new (ECalComponentDateTime, 1);
-	datetime->value = icaltime_from_timet_with_zone (gdata_tasks_task_get_completed (task), 0, 0);
-	if (gdata_tasks_task_get_completed (task) != -1)
-		e_cal_component_set_completed (comp, datetime);
-
+	if (gdata_tasks_task_get_completed (task) != -1) {
+		struct icaltimetype completed_time, *ct;
+		completed_time = icaltime_from_timet_with_zone (gdata_tasks_task_get_completed (task), 1, 0);
+		ct = &completed_time;
+		e_cal_component_set_completed (comp, ct);
+	}
 	/* Due */
-	if (gdata_tasks_task_get_due (task) != -1)
-		e_cal_component_set_due (comp, icaltime_from_timet_with_zone (gdata_tasks_task_get_due (task), 0, 0));
+	if (gdata_tasks_task_get_due (task) != -1) {
+		ECalComponentDateTime due_time, *dt;
+		struct icaltimetype tt;
+		tt = icaltime_from_timet_with_zone (gdata_tasks_task_get_due (task), 1, 0);
+		due_time.tzid = NULL;
+		due_time.value = &tt;
+		dt = &due_time;
+		e_cal_component_set_due (comp, dt);
+	}
 
 	/* Status */
 	if (g_str_equal (gdata_tasks_task_get_status (task), "completed")) {
