@@ -65,157 +65,19 @@ struct _ECalBackendGTasksPrivate {
 
 G_DEFINE_TYPE (ECalBackendGTasks, e_cal_backend_gtasks, E_TYPE_CAL_BACKEND_SYNC)
 
-/* ************************************************* ECalBackend stuff */
-
-static gchar *
-gtasks_get_backend_property (ECalBackend *backend,
-                             const gchar *prop_name)
-{
-	g_return_val_if_fail (prop_name != NULL, FALSE);
-
-	if (g_str_equal (prop_name, CLIENT_BACKEND_PROPERTY_CAPABILITIES)) {
-		GString *caps;
-
-		caps = g_string_new (
-			CAL_STATIC_CAPABILITY_NO_THISANDFUTURE ","
-			CAL_STATIC_CAPABILITY_NO_THISANDPRIOR ","
-			CAL_STATIC_CAPABILITY_REFRESH_SUPPORTED ","
-			CAL_STATIC_CAPABILITY_NO_EMAIL_ALARMS);
-
-		return g_string_free (caps, FALSE);
-
-	} else if (g_str_equal (prop_name, CAL_BACKEND_PROPERTY_DEFAULT_OBJECT)) {
-		ECalComponent *comp;
-		gchar *prop_value;
-
-		comp = e_cal_component_new ();
-
-		switch (e_cal_backend_get_kind (E_CAL_BACKEND (backend))) {
-		case ICAL_VEVENT_COMPONENT:
-			e_cal_component_set_new_vtype (comp, E_CAL_COMPONENT_EVENT);
-			break;
-		case ICAL_VTODO_COMPONENT:
-			e_cal_component_set_new_vtype (comp, E_CAL_COMPONENT_TODO);
-			break;
-		case ICAL_VJOURNAL_COMPONENT:
-			e_cal_component_set_new_vtype (comp, E_CAL_COMPONENT_JOURNAL);
-			break;
-		default:
-			g_object_unref (comp);
-			return NULL;
-		}
-
-		prop_value = e_cal_component_get_as_string (comp);
-
-		g_object_unref (comp);
-
-		return prop_value;
-	}
-
-	/* Chain up to parent's get_backend_property() method. */
-	return E_CAL_BACKEND_CLASS (e_cal_backend_gtasks_parent_class)->get_backend_property (backend, prop_name);
-}
-
-static void
-gtasks_start_view (ECalBackend *backend,
-                   EDataCalView *query)
-{
-	ECalBackendGTasks *cbgtasks;
-	ECalBackendSExp	 *sexp;
-	ETimezoneCache *cache;
-	gboolean do_search;
-	GSList *list, *iter;
-	const gchar *sexp_string;
-	time_t occur_start = -1, occur_end = -1;
-	gboolean prunning_by_time;
-
-	cbgtasks = E_CAL_BACKEND_GTASKS (backend);
-
-	sexp = e_data_cal_view_get_sexp (query);
-	sexp_string = e_cal_backend_sexp_text (sexp);
-
-	if (g_str_equal (sexp_string, "#t")) {
-		do_search = FALSE;
-	} else {
-		do_search = TRUE;
-	}
-	prunning_by_time = e_cal_backend_sexp_evaluate_occur_times (
-		sexp,
-		&occur_start,
-		&occur_end);
-
-	cache = E_TIMEZONE_CACHE (backend);
-
-	list = prunning_by_time ?
-		e_cal_backend_store_get_components_occuring_in_range (cbgtasks->priv->store, occur_start, occur_end)
-		: e_cal_backend_store_get_components (cbgtasks->priv->store);
-
-	for (iter = list; iter; iter = g_slist_next (iter)) {
-		ECalComponent *comp = E_CAL_COMPONENT (iter->data);
-
-		if (!do_search ||
-		    e_cal_backend_sexp_match_comp (sexp, comp, cache)) {
-			e_data_cal_view_notify_components_added_1 (query, comp);
-		}
-
-		g_object_unref (comp);
-	}
-
-	g_slist_free (list);
-
-	e_data_cal_view_notify_complete (query, NULL /* Success */);
-}
-
-/* ********************************************* ECalBackendSync stuff */
+/* Utility function which checks is backend authorized to get tasks scope */
 
 static gboolean
-gtasks_begin_retrieval_cb (GIOSchedulerJob *job,
-                    GCancellable *cancellable,
-                    ECalBackendGTasks *backend)
+backend_is_authorized (ECalBackend *backend)
 {
-	GError *error = NULL;
+	ECalBackendGTasksPrivate *priv;
 
-	if (!e_backend_get_online (E_BACKEND (backend)))
+	priv = E_CAL_BACKEND_GTASKS_GET_PRIVATE (backend);
+
+	if (priv->service == NULL)
 		return FALSE;
 
-	if (backend->priv->is_loading)
-		return FALSE;
-
-	backend->priv->is_loading = TRUE;
-
-	open_tasks (backend, cancellable, &error);
-
-	backend->priv->is_loading = FALSE;
-
-	/* Ignore cancellations. */
-	if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
-		g_error_free (error);
-	} else if (error != NULL) {
-		e_cal_backend_notify_error (
-			E_CAL_BACKEND (backend),
-			error->message);
-		g_error_free (error);
-	}
-
-	return FALSE;
-}
-
-static void
-gtasks_source_changed_cb (ESource *source,
-                          ECalBackendGTasks *cbgtasks)
-{
-	g_return_if_fail (E_IS_CAL_BACKEND_GTASKS (cbgtasks));
-	g_object_ref (cbgtasks);
-
-	initialize_backend (cbgtasks, NULL);
-
-	g_io_scheduler_push_job (
-        (GIOSchedulerJobFunc) gtasks_begin_retrieval_cb,
-        g_object_ref (cbgtasks),
-        (GDestroyNotify) g_object_unref,
-        G_PRIORITY_DEFAULT, NULL);
-
-	g_object_unref (cbgtasks);
+	return gdata_service_is_authorized (priv->service);
 }
 
 static void
@@ -260,187 +122,6 @@ gtasks_write_task_to_component (ECalComponent *comp, GDataTasksTask *task) {
 	}
 }
 
-static void
-gtasks_sync_store_cb (GIOSchedulerJob *job,
-                    GCancellable *cancellable,
-                    ECalBackendGTasks *cbgtasks)
-{
-	GDataFeed *feed;
-	GList *entries, *entries_start;
-	GSList *old_objects, *old_objects_start;
-	GDataTasksTasklist *tasklist;
-	const gchar *tasklist_id;
-
-	// FIXME needs GError for passing to gdata for querying
-	tasklist_id = cbgtasks->priv->tasklist_id;
-	tasklist = gdata_tasks_tasklist_new (tasklist_id);
-
-	g_return_if_fail (backend_is_authorized (E_CAL_BACKEND (cbgtasks)));
-
-	feed = gdata_tasks_service_query_tasks (GDATA_TASKS_SERVICE (cbgtasks->priv->service), tasklist, NULL, cancellable, NULL, NULL, NULL);
-
-	g_return_if_fail (feed != NULL && GDATA_IS_FEED (feed));
-
-	/* Tasks from gt service */
-	entries = gdata_feed_get_entries (feed);
-	/* Currently stored objects */
-	old_objects = e_cal_backend_store_get_components (cbgtasks->priv->store);
-	/* So we can return at the start of linked lists when needed */
-	old_objects_start = old_objects;
-	entries_start = entries;
-
-	while (entries != NULL) {
-		/* indicates if we find task in old_objects */
-		gboolean found = FALSE;
-		GDataTasksTask *task;
-
-		task = GDATA_TASKS_TASK (entries->data);
-
-		while (old_objects != NULL) {
-
-				ECalComponent *old_component;
-				const gchar *uid;
-				gchar *old_component_id;
-
-				old_component = E_CAL_COMPONENT (old_objects->data);
-				e_cal_component_get_uid (old_component, &uid);
-				old_component_id = g_strdup (uid);
-
-				if (g_str_equal (gdata_entry_get_id (GDATA_ENTRY (task)), old_component_id)) {
-					struct icaltimetype new_time, old_comp_last_modified, *itm = NULL;
-					ECalComponent *new_component;
-					found = TRUE;
-					// we have to get that value out first
-					e_cal_component_get_last_modified (old_component, &itm);
-					old_comp_last_modified = *itm;
-					new_time = icaltime_from_timet (gdata_entry_get_updated (GDATA_ENTRY (task)), 1);
-					if (icaltime_compare (new_time, old_comp_last_modified) == 0)
-						break;
-					/* if they are not equal, we sync from server */
-
-					new_component = e_cal_component_new ();
-					gtasks_write_task_to_component (new_component, task);
-					e_cal_backend_notify_component_modified (E_CAL_BACKEND (cbgtasks), old_component, new_component);
-				}
-			old_objects = old_objects->next;
-		}
-		/* if we haven't found server entry, we create new one */
-		if (found == FALSE) {
-			ECalComponent *new_component;
-			new_component = e_cal_component_new ();
-			gtasks_write_task_to_component (new_component, task);
-			// add it to storage
-			e_cal_backend_store_put_component (cbgtasks->priv->store, new_component);
-			// notify view that component is created
-			e_cal_backend_notify_component_created (E_CAL_BACKEND (cbgtasks), new_component);
-		}
-
-		old_objects = old_objects_start;
-		entries = entries->next;
-	}
-
-	/* Removing old_objects which are not on server anymore */
-	old_objects = old_objects_start;
-	entries = entries_start;
-	while (old_objects != NULL) {
-		ECalComponent *old_component;
-		gboolean found = FALSE;
-		old_component = E_CAL_COMPONENT (old_objects->data);
-		while (entries != NULL) {
-			GDataTasksTask *task;
-			const gchar *uid;
-			gchar *old_component_id;
-
-			task = GDATA_TASKS_TASK (entries->data);
-			e_cal_component_get_uid (old_component, &uid);
-			old_component_id = g_strdup (uid);
-			if (g_str_equal (gdata_entry_get_id (GDATA_ENTRY (task)), old_component_id)) {
-				found = TRUE;
-				break;
-			}
-			entries = entries->next;
-		}
-		if (found == FALSE) {
-			ECalComponentId *id;
-			id = e_cal_component_get_id (old_component);
-			e_cal_backend_store_remove_component (cbgtasks->priv->store, id->uid, id->rid);
-			e_cal_backend_notify_component_removed (E_CAL_BACKEND (cbgtasks), id, old_component, NULL);
-		}
-		entries = entries_start;
-		old_objects = old_objects->next;
-	}
-
-	g_object_unref (tasklist);
-	g_object_unref (feed);
-}
-
-static void
-gtasks_time_to_refresh_cb (ESource *source,
-                                    gpointer user_data)
-{
-	ECalBackendGTasks *cbgtasks = user_data;
-
-	g_return_if_fail (E_IS_CAL_BACKEND_GTASKS (cbgtasks));
-
-	if (!e_backend_get_online (E_BACKEND (cbgtasks)))
-		return;
-
-	g_io_scheduler_push_job (
-		(GIOSchedulerJobFunc) gtasks_sync_store_cb,
-		g_object_ref (cbgtasks),
-		(GDestroyNotify) g_object_unref,
-		G_PRIORITY_DEFAULT, NULL);
-}
-
-
-static gboolean
-initialize_backend (ECalBackendGTasks *cbgtasks,
-                    GError **perror)
-{
-	ECalBackend              *backend;
-	ESource                  *source;
-	const gchar              *cache_dir;
-
-	backend = E_CAL_BACKEND (cbgtasks);
-	cache_dir = e_cal_backend_get_cache_dir (backend);
-	source = e_backend_get_source (E_BACKEND (backend));
-
-	/* FIXME we should hook up tasklist id here */
-	cbgtasks->priv->tasklist_id = g_strdup ("tasklist-id");
-
-	if (!g_signal_handler_find (G_OBJECT (source), G_SIGNAL_MATCH_FUNC | G_SIGNAL_MATCH_DATA, 0, 0, NULL, gtasks_source_changed_cb, cbgtasks))
-		g_signal_connect (G_OBJECT (source), "changed", G_CALLBACK (gtasks_source_changed_cb), cbgtasks);
-
-	if (cbgtasks->priv->store == NULL) {
-		/* remove the old cache while migrating to ECalBackendStore */
-		e_cal_backend_cache_remove (cache_dir, "cache.xml");
-		cbgtasks->priv->store = e_cal_backend_store_new (
-			cache_dir, E_TIMEZONE_CACHE (cbgtasks));
-		e_cal_backend_store_load (cbgtasks->priv->store);
-	}
-
-	if (cbgtasks->priv->refresh_id == 0) {
-		cbgtasks->priv->refresh_id = e_source_refresh_add_timeout (
-			source, NULL, gtasks_time_to_refresh_cb, cbgtasks, NULL);
-	}
-
-	return TRUE;
-}
-
-/* Utility function which checks is backend authorized to get tasks scope */
-
-static gboolean
-backend_is_authorized (ECalBackend *backend)
-{
-	ECalBackendGTasksPrivate *priv;
-
-	priv = E_CAL_BACKEND_GTASKS_GET_PRIVATE (backend);
-
-	if (priv->service == NULL)
-		return FALSE;
-
-	return gdata_service_is_authorized (priv->service);
-}
 
 gboolean
 gtasks_load (ECalBackendGTasks *cbgtasks, GCancellable *cancellable, GError **error)
@@ -586,6 +267,329 @@ open_tasks (ECalBackendGTasks *cbgtasks,
 		g_propagate_error (error, local_error);
 
 	return success;
+}
+
+/* ************************************************* ECalBackend stuff */
+
+static gchar *
+gtasks_get_backend_property (ECalBackend *backend,
+                             const gchar *prop_name)
+{
+	g_return_val_if_fail (prop_name != NULL, FALSE);
+
+	if (g_str_equal (prop_name, CLIENT_BACKEND_PROPERTY_CAPABILITIES)) {
+		GString *caps;
+
+		caps = g_string_new (
+			CAL_STATIC_CAPABILITY_NO_THISANDFUTURE ","
+			CAL_STATIC_CAPABILITY_NO_THISANDPRIOR ","
+			CAL_STATIC_CAPABILITY_REFRESH_SUPPORTED ","
+			CAL_STATIC_CAPABILITY_NO_EMAIL_ALARMS);
+
+		return g_string_free (caps, FALSE);
+
+	} else if (g_str_equal (prop_name, CAL_BACKEND_PROPERTY_DEFAULT_OBJECT)) {
+		ECalComponent *comp;
+		gchar *prop_value;
+
+		comp = e_cal_component_new ();
+
+		switch (e_cal_backend_get_kind (E_CAL_BACKEND (backend))) {
+		case ICAL_VEVENT_COMPONENT:
+			e_cal_component_set_new_vtype (comp, E_CAL_COMPONENT_EVENT);
+			break;
+		case ICAL_VTODO_COMPONENT:
+			e_cal_component_set_new_vtype (comp, E_CAL_COMPONENT_TODO);
+			break;
+		case ICAL_VJOURNAL_COMPONENT:
+			e_cal_component_set_new_vtype (comp, E_CAL_COMPONENT_JOURNAL);
+			break;
+		default:
+			g_object_unref (comp);
+			return NULL;
+		}
+
+		prop_value = e_cal_component_get_as_string (comp);
+
+		g_object_unref (comp);
+
+		return prop_value;
+	}
+
+	/* Chain up to parent's get_backend_property() method. */
+	return E_CAL_BACKEND_CLASS (e_cal_backend_gtasks_parent_class)->get_backend_property (backend, prop_name);
+}
+
+static void
+gtasks_start_view (ECalBackend *backend,
+                   EDataCalView *query)
+{
+	ECalBackendGTasks *cbgtasks;
+	ECalBackendSExp	 *sexp;
+	ETimezoneCache *cache;
+	gboolean do_search;
+	GSList *list, *iter;
+	const gchar *sexp_string;
+	time_t occur_start = -1, occur_end = -1;
+	gboolean prunning_by_time;
+
+	cbgtasks = E_CAL_BACKEND_GTASKS (backend);
+
+	sexp = e_data_cal_view_get_sexp (query);
+	sexp_string = e_cal_backend_sexp_text (sexp);
+
+	if (g_str_equal (sexp_string, "#t")) {
+		do_search = FALSE;
+	} else {
+		do_search = TRUE;
+	}
+	prunning_by_time = e_cal_backend_sexp_evaluate_occur_times (
+		sexp,
+		&occur_start,
+		&occur_end);
+
+	cache = E_TIMEZONE_CACHE (backend);
+
+	list = prunning_by_time ?
+		e_cal_backend_store_get_components_occuring_in_range (cbgtasks->priv->store, occur_start, occur_end)
+		: e_cal_backend_store_get_components (cbgtasks->priv->store);
+
+	for (iter = list; iter; iter = g_slist_next (iter)) {
+		ECalComponent *comp = E_CAL_COMPONENT (iter->data);
+
+		if (!do_search ||
+		    e_cal_backend_sexp_match_comp (sexp, comp, cache)) {
+			e_data_cal_view_notify_components_added_1 (query, comp);
+		}
+
+		g_object_unref (comp);
+	}
+
+	g_slist_free (list);
+
+	e_data_cal_view_notify_complete (query, NULL /* Success */);
+}
+
+/* ********************************************* ECalBackendSync stuff */
+
+static gboolean
+gtasks_begin_retrieval_cb (GIOSchedulerJob *job,
+                    GCancellable *cancellable,
+                    ECalBackendGTasks *backend)
+{
+	GError *error = NULL;
+
+	if (!e_backend_get_online (E_BACKEND (backend)))
+		return FALSE;
+
+	if (backend->priv->is_loading)
+		return FALSE;
+
+	backend->priv->is_loading = TRUE;
+
+	open_tasks (backend, cancellable, &error);
+
+	backend->priv->is_loading = FALSE;
+
+	/* Ignore cancellations. */
+	if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
+		g_error_free (error);
+	} else if (error != NULL) {
+		e_cal_backend_notify_error (
+			E_CAL_BACKEND (backend),
+			error->message);
+		g_error_free (error);
+	}
+
+	return FALSE;
+}
+
+static void
+gtasks_sync_store_cb (GIOSchedulerJob *job,
+                    GCancellable *cancellable,
+                    ECalBackendGTasks *cbgtasks)
+{
+	GDataFeed *feed;
+	GList *entries, *entries_start;
+	GSList *old_objects, *old_objects_start;
+	GDataTasksTasklist *tasklist;
+	const gchar *tasklist_id;
+
+	// FIXME needs GError for passing to gdata for querying
+	tasklist_id = cbgtasks->priv->tasklist_id;
+	tasklist = gdata_tasks_tasklist_new (tasklist_id);
+
+	g_return_if_fail (backend_is_authorized (E_CAL_BACKEND (cbgtasks)));
+
+	feed = gdata_tasks_service_query_tasks (GDATA_TASKS_SERVICE (cbgtasks->priv->service), tasklist, NULL, cancellable, NULL, NULL, NULL);
+
+	g_return_if_fail (feed != NULL && GDATA_IS_FEED (feed));
+
+	/* Tasks from gt service */
+	entries = gdata_feed_get_entries (feed);
+	/* Currently stored objects */
+	old_objects = e_cal_backend_store_get_components (cbgtasks->priv->store);
+	/* So we can return at the start of linked lists when needed */
+	old_objects_start = old_objects;
+	entries_start = entries;
+
+	while (entries != NULL) {
+		/* indicates if we find task in old_objects */
+		gboolean found = FALSE;
+		GDataTasksTask *task;
+
+		task = GDATA_TASKS_TASK (entries->data);
+
+		while (old_objects != NULL) {
+
+				ECalComponent *old_component;
+				const gchar *uid;
+				gchar *old_component_id;
+
+				old_component = E_CAL_COMPONENT (old_objects->data);
+				e_cal_component_get_uid (old_component, &uid);
+				old_component_id = g_strdup (uid);
+
+				if (g_str_equal (gdata_entry_get_id (GDATA_ENTRY (task)), old_component_id)) {
+					struct icaltimetype new_time, old_comp_last_modified, *itm = NULL;
+					ECalComponent *new_component;
+					found = TRUE;
+					// we have to get that value out first
+					e_cal_component_get_last_modified (old_component, &itm);
+					old_comp_last_modified = *itm;
+					new_time = icaltime_from_timet (gdata_entry_get_updated (GDATA_ENTRY (task)), 1);
+					if (icaltime_compare (new_time, old_comp_last_modified) == 0)
+						break;
+					/* if they are not equal, we sync from server */
+
+					new_component = e_cal_component_new ();
+					gtasks_write_task_to_component (new_component, task);
+					e_cal_backend_notify_component_modified (E_CAL_BACKEND (cbgtasks), old_component, new_component);
+				}
+			old_objects = old_objects->next;
+		}
+		/* if we haven't found server entry, we create new one */
+		if (found == FALSE) {
+			ECalComponent *new_component;
+			new_component = e_cal_component_new ();
+			gtasks_write_task_to_component (new_component, task);
+			// add it to storage
+			e_cal_backend_store_put_component (cbgtasks->priv->store, new_component);
+			// notify view that component is created
+			e_cal_backend_notify_component_created (E_CAL_BACKEND (cbgtasks), new_component);
+		}
+
+		old_objects = old_objects_start;
+		entries = entries->next;
+	}
+
+	/* Removing old_objects which are not on server anymore */
+	old_objects = old_objects_start;
+	entries = entries_start;
+	while (old_objects != NULL) {
+		ECalComponent *old_component;
+		gboolean found = FALSE;
+		old_component = E_CAL_COMPONENT (old_objects->data);
+		while (entries != NULL) {
+			GDataTasksTask *task;
+			const gchar *uid;
+			gchar *old_component_id;
+
+			task = GDATA_TASKS_TASK (entries->data);
+			e_cal_component_get_uid (old_component, &uid);
+			old_component_id = g_strdup (uid);
+			if (g_str_equal (gdata_entry_get_id (GDATA_ENTRY (task)), old_component_id)) {
+				found = TRUE;
+				break;
+			}
+			entries = entries->next;
+		}
+		if (found == FALSE) {
+			ECalComponentId *id;
+			id = e_cal_component_get_id (old_component);
+			e_cal_backend_store_remove_component (cbgtasks->priv->store, id->uid, id->rid);
+			e_cal_backend_notify_component_removed (E_CAL_BACKEND (cbgtasks), id, old_component, NULL);
+		}
+		entries = entries_start;
+		old_objects = old_objects->next;
+	}
+
+	g_object_unref (tasklist);
+	g_object_unref (feed);
+}
+
+static void
+gtasks_time_to_refresh_cb (ESource *source,
+                                    gpointer user_data)
+{
+	ECalBackendGTasks *cbgtasks = user_data;
+
+	g_return_if_fail (E_IS_CAL_BACKEND_GTASKS (cbgtasks));
+
+	if (!e_backend_get_online (E_BACKEND (cbgtasks)))
+		return;
+
+	g_io_scheduler_push_job (
+		(GIOSchedulerJobFunc) gtasks_sync_store_cb,
+		g_object_ref (cbgtasks),
+		(GDestroyNotify) g_object_unref,
+		G_PRIORITY_DEFAULT, NULL);
+}
+
+static void
+gtasks_source_changed_cb (ESource *source,
+                          ECalBackendGTasks *cbgtasks);
+
+static gboolean
+initialize_backend (ECalBackendGTasks *cbgtasks,
+                    GError **perror)
+{
+	ECalBackend              *backend;
+	ESource                  *source;
+	const gchar              *cache_dir;
+
+	backend = E_CAL_BACKEND (cbgtasks);
+	cache_dir = e_cal_backend_get_cache_dir (backend);
+	source = e_backend_get_source (E_BACKEND (backend));
+
+	/* FIXME we should hook up tasklist id here */
+	cbgtasks->priv->tasklist_id = g_strdup ("tasklist-id");
+
+	if (!g_signal_handler_find (G_OBJECT (source), G_SIGNAL_MATCH_FUNC | G_SIGNAL_MATCH_DATA, 0, 0, NULL, gtasks_source_changed_cb, cbgtasks))
+		g_signal_connect (G_OBJECT (source), "changed", G_CALLBACK (gtasks_source_changed_cb), cbgtasks);
+
+	if (cbgtasks->priv->store == NULL) {
+		/* remove the old cache while migrating to ECalBackendStore */
+		e_cal_backend_cache_remove (cache_dir, "cache.xml");
+		cbgtasks->priv->store = e_cal_backend_store_new (
+			cache_dir, E_TIMEZONE_CACHE (cbgtasks));
+		e_cal_backend_store_load (cbgtasks->priv->store);
+	}
+
+	if (cbgtasks->priv->refresh_id == 0) {
+		cbgtasks->priv->refresh_id = e_source_refresh_add_timeout (
+			source, NULL, gtasks_time_to_refresh_cb, cbgtasks, NULL);
+	}
+
+	return TRUE;
+}
+
+static void
+gtasks_source_changed_cb (ESource *source,
+                          ECalBackendGTasks *cbgtasks)
+{
+	g_return_if_fail (E_IS_CAL_BACKEND_GTASKS (cbgtasks));
+	g_object_ref (cbgtasks);
+
+	initialize_backend (cbgtasks, NULL);
+
+	g_io_scheduler_push_job (
+        (GIOSchedulerJobFunc) gtasks_begin_retrieval_cb,
+        g_object_ref (cbgtasks),
+        (GDestroyNotify) g_object_unref,
+        G_PRIORITY_DEFAULT, NULL);
+
+	g_object_unref (cbgtasks);
 }
 
 static void
