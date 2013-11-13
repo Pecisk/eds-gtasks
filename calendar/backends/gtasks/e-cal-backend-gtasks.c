@@ -122,8 +122,7 @@ gtasks_write_task_to_component (ECalComponent *comp, GDataTasksTask *task) {
 	}
 }
 
-
-gboolean
+static gboolean
 gtasks_load (ECalBackendGTasks *cbgtasks, GCancellable *cancellable, GError **error)
 {
 	GDataFeed *feed;
@@ -797,7 +796,8 @@ gtasks_get_free_busy (ECalBackendSync *backend,
 
 /* Not supported currently, needs implementation */
 
-void gtasks_create_objects (ECalBackendSync *backend,
+static void
+gtasks_create_objects (ECalBackendSync *backend,
                   EDataCal *cal,
                   GCancellable *cancellable,
                   const GSList *in_calobjs,
