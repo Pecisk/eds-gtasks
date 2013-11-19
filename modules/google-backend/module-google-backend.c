@@ -63,6 +63,7 @@
 /* Tasks Configuration Details */
 #define GOOGLE_TASKS_BACKEND_NAME	"gtasks"
 #define GOOGLE_TASKS_RESOURCE_ID	"Tasks"
+#define GOOGLE_TASKS_HOST			"www.google.com"
 
 typedef struct _EGoogleBackend EGoogleBackend;
 typedef struct _EGoogleBackendClass EGoogleBackendClass;
@@ -180,11 +181,8 @@ google_backend_tasks_update_auth_method (ESource *source)
 	oauth2_support = e_server_side_source_ref_oauth2_support (
 		E_SERVER_SIDE_SOURCE (source));
 
-	if (oauth2_support != NULL) {
-		method = "OAuth2";
-	} else {
-		method = "plain/password";
-	}
+	/* FIXME should be Oauth2 all the time */
+	method = (oauth2_support != NULL) ? "OAuth2" : "ClientLogin";
 
 	extension_name = E_SOURCE_EXTENSION_AUTHENTICATION;
 	auth_extension = e_source_get_extension (source, extension_name);
@@ -304,6 +302,9 @@ google_backend_add_tasks (ECollectionBackend *backend)
 
 	extension_name = E_SOURCE_EXTENSION_AUTHENTICATION;
 	extension = e_source_get_extension (source, extension_name);
+
+	e_source_authentication_set_host (
+	E_SOURCE_AUTHENTICATION (extension), GOOGLE_TASKS_HOST);
 
 	g_object_bind_property (
 		collection_extension, "identity",

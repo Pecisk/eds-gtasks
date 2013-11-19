@@ -600,7 +600,7 @@ gtasks_do_open (ECalBackendSync *backend,
 {
 	ECalBackendGTasks *cbgtasks;
 	gboolean online;
-	GError *local_error;
+	GError *local_error = NULL;
 
 	cbgtasks = E_CAL_BACKEND_GTASKS (backend);
 
