@@ -85,11 +85,17 @@ gtasks_write_task_to_component (ECalComponent *comp, GDataTasksTask *task) {
 	GSList *desc_list = NULL;
 	ECalComponentText desc;
 	ECalComponentText summary;
+	gchar *notes;
 
 	/* Description */
-	desc.value = g_strdup (gdata_tasks_task_get_notes (task));
-	desc_list = g_slist_append (desc_list, &desc);
-	e_cal_component_set_description_list (comp, desc_list);
+	notes = gdata_tasks_task_get_notes (task);
+	if (notes != NULL) {
+		printf ("%s\n", gdata_tasks_task_get_notes (task));
+		desc.value = g_strdup (notes);
+		desc_list = g_slist_append (desc_list, &desc);
+		e_cal_component_set_description_list (comp, desc_list);
+	}
+	g_free (notes);
 
 	/* Summary */
 	summary.value = g_strdup (gdata_entry_get_title (GDATA_ENTRY (task)));
@@ -309,6 +315,7 @@ gtasks_get_backend_property (ECalBackend *backend,
 			return NULL;
 		}
 
+		printf ("backend property.\n");
 		prop_value = e_cal_component_get_as_string (comp);
 
 		g_object_unref (comp);
@@ -758,6 +765,7 @@ gtasks_get_object_list (ECalBackendSync *backend,
 
 		if (!do_search ||
 		    e_cal_backend_sexp_match_comp (sexp, comp, cache)) {
+			printf ("Matching objects.\n");
 			*objects = g_slist_prepend (*objects, e_cal_component_get_as_string (comp));
 		}
 
