@@ -188,6 +188,7 @@ gtasks_load (ECalBackendGTasks *cbgtasks, GCancellable *cancellable, GError **er
 		if (found == FALSE) {
 			ECalComponent *new_component;
 			new_component = e_cal_component_new ();
+			e_cal_component_set_new_vtype (new_component, E_CAL_COMPONENT_TODO);
 			gtasks_write_task_to_component (new_component, task);
 			/* add it to storage */
 			e_cal_backend_store_put_component (cbgtasks->priv->store, new_component);
@@ -471,6 +472,7 @@ gtasks_sync_store_cb (GIOSchedulerJob *job,
 		if (found == FALSE) {
 			ECalComponent *new_component;
 			new_component = e_cal_component_new ();
+			e_cal_component_set_new_vtype (new_component, E_CAL_COMPONENT_TODO);
 			gtasks_write_task_to_component (new_component, task);
 			// add it to storage
 			e_cal_backend_store_put_component (cbgtasks->priv->store, new_component);
