@@ -158,7 +158,7 @@ gdata_oauth2_authorizer_constructed (GObject *object)
 	/* XXX We would need to generalize this to make the class
 	 *     reusable for other service types, probably by adding
 	 *     a "service-type" constructor property. */
-	service_type = GDATA_TYPE_CONTACTS_SERVICE;
+	service_type = GDATA_TYPE_TASKS_SERVICE;
 	domains = gdata_service_get_authorization_domains (service_type);
 
 	while (domains != NULL) {

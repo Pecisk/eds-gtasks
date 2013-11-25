@@ -552,7 +552,7 @@ initialize_backend (ECalBackendGTasks *cbgtasks,
 	source = e_backend_get_source (E_BACKEND (backend));
 
 	/* FIXME we should hook up tasklist id here */
-	cbgtasks->priv->tasklist_id = g_strdup ("tasklist-id");
+	cbgtasks->priv->tasklist_id = g_strdup ("MTUwODEzOTIzNDkwNDY1NTE5MTg6MDow");
 
 	if (!g_signal_handler_find (G_OBJECT (source), G_SIGNAL_MATCH_FUNC | G_SIGNAL_MATCH_DATA, 0, 0, NULL, gtasks_source_changed_cb, cbgtasks))
 		g_signal_connect (G_OBJECT (source), "changed", G_CALLBACK (gtasks_source_changed_cb), cbgtasks);
@@ -644,7 +644,7 @@ gtasks_do_open (ECalBackendSync *backend,
 			cbgtasks->priv->service = GDATA_SERVICE (contacts_service);
 		}
 		/* Refresh authorization - if it fails, return without opening tasks */
-		if(gdata_authorizer_refresh_authorization (cbgtasks->priv->authorizer, cancellable, &local_error))
+		if(!gdata_authorizer_refresh_authorization (cbgtasks->priv->authorizer, cancellable, &local_error))
 			return;
 	}
 
