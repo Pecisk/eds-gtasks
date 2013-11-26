@@ -85,17 +85,15 @@ gtasks_write_task_to_component (ECalComponent *comp, GDataTasksTask *task) {
 	GSList *desc_list = NULL;
 	ECalComponentText desc;
 	ECalComponentText summary;
-	gchar *notes;
+	const gchar *notes;
 
 	/* Description */
 	notes = gdata_tasks_task_get_notes (task);
 	if (notes != NULL) {
-		printf ("%s\n", gdata_tasks_task_get_notes (task));
 		desc.value = g_strdup (notes);
 		desc_list = g_slist_append (desc_list, &desc);
 		e_cal_component_set_description_list (comp, desc_list);
 	}
-	g_free (notes);
 
 	/* Summary */
 	summary.value = g_strdup (gdata_entry_get_title (GDATA_ENTRY (task)));
@@ -253,7 +251,9 @@ open_tasks (ECalBackendGTasks *cbgtasks,
 	g_return_val_if_fail (cbgtasks != NULL, FALSE);
 
 	/* Can't create service */
-	g_return_val_if_fail (cbgtasks->priv->service != NULL, FALSE);
+	//g_return_val_if_fail (cbgtasks->priv->service != NULL, FALSE);
+	if (cbgtasks->priv->service == NULL)
+		return FALSE;
 
 	success = gtasks_load (cbgtasks, cancellable, &local_error);
 
@@ -316,6 +316,7 @@ gtasks_get_backend_property (ECalBackend *backend,
 		}
 
 		printf ("backend property.\n");
+		e_cal_component_commit_sequence (comp);
 		prop_value = e_cal_component_get_as_string (comp);
 
 		g_object_unref (comp);
@@ -702,6 +703,7 @@ gtasks_get_object (ECalBackendSync *backend,
                    gchar **object,
                    GError **error)
 {
+	printf ("Get object.***********\n");
 	ECalBackendGTasks *cbgtasks;
 	cbgtasks = E_CAL_BACKEND_GTASKS (backend);
 
@@ -726,6 +728,7 @@ gtasks_get_object_list (ECalBackendSync *backend,
                         GSList **objects,
                         GError **perror)
 {
+	printf ("Get object list.***********\n");
 	ECalBackendGTasks *cbgtasks;
 	ECalBackendSExp *sexp;
 	ETimezoneCache *cache;
@@ -765,7 +768,8 @@ gtasks_get_object_list (ECalBackendSync *backend,
 
 		if (!do_search ||
 		    e_cal_backend_sexp_match_comp (sexp, comp, cache)) {
-			printf ("Matching objects.\n");
+			printf ("ECalComponent to String:\n");
+			e_cal_component_commit_sequence (comp);
 			*objects = g_slist_prepend (*objects, e_cal_component_get_as_string (comp));
 		}
 
