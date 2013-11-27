@@ -123,6 +123,8 @@ gtasks_write_task_to_component (ECalComponent *comp, GDataTasksTask *task) {
 	} else {
 		// FIXME shouldn't this be NONE? Verify
 		e_cal_component_set_status (comp, ICAL_STATUS_NEEDSACTION);
+	/* Commit Sequence as we creating ECalComponent on the fly */
+	e_cal_component_commit_sequence (comp);
 	}
 }
 
@@ -316,7 +318,6 @@ gtasks_get_backend_property (ECalBackend *backend,
 		}
 
 		printf ("backend property.\n");
-		e_cal_component_commit_sequence (comp);
 		prop_value = e_cal_component_get_as_string (comp);
 
 		g_object_unref (comp);
