@@ -123,8 +123,8 @@ gtasks_write_task_to_component (ECalComponent *comp, GDataTasksTask *task) {
 	} else {
 		// FIXME shouldn't this be NONE? Verify
 		e_cal_component_set_status (comp, ICAL_STATUS_NEEDSACTION);
-	/* Commit Sequence as we creating ECalComponent on the fly */
-	e_cal_component_commit_sequence (comp);
+	/* FIXME Sequence problem as we creating ECalComponent on the fly */
+	e_cal_component_abort_sequence (comp);
 	}
 }
 
@@ -770,7 +770,6 @@ gtasks_get_object_list (ECalBackendSync *backend,
 		if (!do_search ||
 		    e_cal_backend_sexp_match_comp (sexp, comp, cache)) {
 			printf ("ECalComponent to String:\n");
-			e_cal_component_commit_sequence (comp);
 			*objects = g_slist_prepend (*objects, e_cal_component_get_as_string (comp));
 		}
 
