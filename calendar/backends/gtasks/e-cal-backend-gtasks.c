@@ -124,7 +124,8 @@ gtasks_write_task_to_component (ECalComponent *comp, GDataTasksTask *task) {
 		// FIXME shouldn't this be NONE? Verify
 		e_cal_component_set_status (comp, ICAL_STATUS_NEEDSACTION);
 	/* FIXME Sequence problem as we creating ECalComponent on the fly */
-	e_cal_component_abort_sequence (comp);
+	gint seq_id = 1;
+	e_cal_component_set_sequence (comp, &seq_id);
 	}
 }
 
@@ -316,8 +317,6 @@ gtasks_get_backend_property (ECalBackend *backend,
 			g_object_unref (comp);
 			return NULL;
 		}
-
-		printf ("backend property.\n");
 		prop_value = e_cal_component_get_as_string (comp);
 
 		g_object_unref (comp);
@@ -365,7 +364,7 @@ gtasks_start_view (ECalBackend *backend,
 
 	for (iter = list; iter; iter = g_slist_next (iter)) {
 		ECalComponent *comp = E_CAL_COMPONENT (iter->data);
-
+		e_cal_component_commit_sequence (comp);
 		if (!do_search ||
 		    e_cal_backend_sexp_match_comp (sexp, comp, cache)) {
 			e_data_cal_view_notify_components_added_1 (query, comp);
@@ -704,7 +703,6 @@ gtasks_get_object (ECalBackendSync *backend,
                    gchar **object,
                    GError **error)
 {
-	printf ("Get object.***********\n");
 	ECalBackendGTasks *cbgtasks;
 	cbgtasks = E_CAL_BACKEND_GTASKS (backend);
 
@@ -729,7 +727,6 @@ gtasks_get_object_list (ECalBackendSync *backend,
                         GSList **objects,
                         GError **perror)
 {
-	printf ("Get object list.***********\n");
 	ECalBackendGTasks *cbgtasks;
 	ECalBackendSExp *sexp;
 	ETimezoneCache *cache;
@@ -769,7 +766,7 @@ gtasks_get_object_list (ECalBackendSync *backend,
 
 		if (!do_search ||
 		    e_cal_backend_sexp_match_comp (sexp, comp, cache)) {
-			printf ("ECalComponent to String:\n");
+			e_cal_component_commit_sequence (comp);
 			*objects = g_slist_prepend (*objects, e_cal_component_get_as_string (comp));
 		}
 
