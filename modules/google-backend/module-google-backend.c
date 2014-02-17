@@ -317,6 +317,12 @@ google_backend_add_tasks (ECollectionBackend *backend)
 	e_source_security_set_secure (
 		E_SOURCE_SECURITY (extension), TRUE);
 
+	extension_name = E_SOURCE_EXTENSION_TASKLIST_ID;
+	extension = e_source_get_extension (source, extension_name);
+
+	e_source_tasklist_id_set_id (
+		E_SOURCE_SECURITY (extension), "@default");
+
 	server = e_collection_backend_ref_server (backend);
 	e_source_registry_server_add_source (server, source);
 	g_object_unref (server);

@@ -570,13 +570,17 @@ initialize_backend (ECalBackendGTasks *cbgtasks,
 	ECalBackend              *backend;
 	ESource                  *source;
 	const gchar              *cache_dir;
+	const gchar              *extension_name;
+	ESourceTasklistID        *extension;
+
 
 	backend = E_CAL_BACKEND (cbgtasks);
 	cache_dir = e_cal_backend_get_cache_dir (backend);
 	source = e_backend_get_source (E_BACKEND (backend));
 
-	/* FIXME we should hook up tasklist id here */
-	cbgtasks->priv->tasklist_id = g_strdup ("MTUwODEzOTIzNDkwNDY1NTE5MTg6MDow");
+	extension_name = E_SOURCE_EXTENSION_AUTHENTICATION;
+	extension = e_source_get_extension (source, extension_name);
+	cbgtasks->priv->tasklist_id = e_source_tasklist_id_dup_id (extension);
 
 	if (!g_signal_handler_find (G_OBJECT (source), G_SIGNAL_MATCH_FUNC | G_SIGNAL_MATCH_DATA, 0, 0, NULL, gtasks_source_changed_cb, cbgtasks))
 		g_signal_connect (G_OBJECT (source), "changed", G_CALLBACK (gtasks_source_changed_cb), cbgtasks);
