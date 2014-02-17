@@ -27,10 +27,10 @@
 
 /* Standard GObject macros */
 #define E_TYPE_SOURCE_TASKLIST_ID \
-	(e_source_security_get_type ())
+	(e_source_tasklist_id_get_type ())
 #define E_SOURCE_TASKLIST_ID(obj) \
 	(G_TYPE_CHECK_INSTANCE_CAST \
-	((obj), E_TYPE_SOURCE_TASKLIST_ID, ESourceSecurity))
+	((obj), E_TYPE_SOURCE_TASKLIST_ID, ESourceTasklistID))
 #define E_SOURCE_TASKLIST_ID_CLASS(cls) \
 	(G_TYPE_CHECK_CLASS_CAST \
 	((cls), E_TYPE_SOURCE_TASKLIST_ID, ESourceTasklistIDClass))
@@ -77,14 +77,14 @@ struct _ESourceTasklistIDClass {
 	ESourceExtensionClass parent_class;
 };
 
-GType		e_source_security_get_type	(void) G_GNUC_CONST;
+GType		e_source_tasklist_id_get_type	(void) G_GNUC_CONST;
 const gchar *	e_source_tasklist_id_get_id	(ESourceTasklistID *extension);
 gchar *		e_source_tasklist_id_dup_id	(ESourceTasklistID *extension);
 void		e_source_tasklist_id_set_id	(ESourceTasklistID *extension,
 						 const gchar *id);
 const gchar *	e_source_tasklist_id_get_title	(ESourceTasklistID *extension);
 gchar *		e_source_tasklist_id_dup_title	(ESourceTasklistID *extension);
-void		e_source_tasklist_id_set_id	(ESourceTasklistID *extension,
+void		e_source_tasklist_id_set_title	(ESourceTasklistID *extension,
 						 const gchar *title);
 
 G_END_DECLS

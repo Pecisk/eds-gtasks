@@ -39,9 +39,9 @@
 
 #include <libedataserver/e-data-server-util.h>
 
-#define E_SOURCE_SECURITY_GET_PRIVATE(obj) \
+#define E_SOURCE_TASKLIST_ID_GET_PRIVATE(obj) \
 	(G_TYPE_INSTANCE_GET_PRIVATE \
-	((obj), E_TYPE_SOURCE_SECURITY, ESourceTasklistIDPrivate))
+	((obj), E_TYPE_SOURCE_TASKLIST_ID, ESourceTasklistIDPrivate))
 
 #define SECURE_METHOD "tls"
 
@@ -102,7 +102,7 @@ source_tasklist_id_get_property (GObject *object,
 		case PROP_TITLE:
 			g_value_take_string (
 				value,
-				e_source_tasklist_id_get_title (
+				e_source_tasklist_id_dup_title (
 				E_SOURCE_TASKLIST_ID (object)));
 			return;
 	}
@@ -119,7 +119,8 @@ source_tasklist_id_finalize (GObject *object)
 
 	g_mutex_clear (&priv->property_lock);
 
-	g_free (priv->method);
+	g_free (priv->id);
+	g_free (priv->title);
 
 	/* Chain up to parent's finalize() method. */
 	G_OBJECT_CLASS (e_source_tasklist_id_parent_class)->finalize (object);
@@ -136,7 +137,7 @@ e_source_tasklist_id_class_init (ESourceTasklistIDClass *class)
 	object_class = G_OBJECT_CLASS (class);
 	object_class->set_property = source_tasklist_id_set_property;
 	object_class->get_property = source_tasklist_id_get_property;
-	object_class->finalize = source_security_finalize;
+	object_class->finalize = source_tasklist_id_finalize;
 
 	extension_class = E_SOURCE_EXTENSION_CLASS (class);
 	extension_class->name = E_SOURCE_EXTENSION_TASKLIST_ID;
@@ -180,7 +181,7 @@ e_source_tasklist_id_get_id (ESourceTasklistID *extension)
 {
 	g_return_val_if_fail (E_IS_SOURCE_TASKLIST_ID (extension), NULL);
 
-	return extension->priv->method;
+	return extension->priv->id;
 }
 
 gchar *
@@ -193,7 +194,7 @@ e_source_tasklist_id_dup_id (ESourceTasklistID *extension)
 
 	g_mutex_lock (&extension->priv->property_lock);
 
-	protected = e_source_security_get_id (extension);
+	protected = e_source_tasklist_id_get_id (extension);
 	duplicate = g_strdup (protected);
 
 	g_mutex_unlock (&extension->priv->property_lock);
@@ -250,7 +251,7 @@ e_source_tasklist_id_dup_title (ESourceTasklistID *extension)
 
 	g_mutex_lock (&extension->priv->property_lock);
 
-	protected = e_source_security_get_title (extension);
+	protected = e_source_tasklist_id_get_title (extension);
 	duplicate = g_strdup (protected);
 
 	g_mutex_unlock (&extension->priv->property_lock);

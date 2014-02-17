@@ -55,6 +55,9 @@ struct _ECalBackendGTasksPrivate {
 	/* TRUE when server reachable */
 	gboolean opened;
 
+	/* TRUE if gone offline - FIXME please check me */
+	//gboolean do_offline;
+
 	guint refresh_id;
 	guint is_loading;
 
@@ -79,12 +82,12 @@ check_state (ECalBackendGTasks *cbgtasks,
 		return FALSE;
 	}
 
-	if (!e_backend_get_online (E_BACKEND (cbdav))) {
-
-		if (!cbgtasks->priv->do_offline) {
+	if (!e_backend_get_online (E_BACKEND (cbgtasks))) {
+		// FIXME
+		//if (!cbgtasks->priv->do_offline) {
 			g_propagate_error (perror, EDC_ERROR (RepositoryOffline));
 			return FALSE;
-		}
+		//}
 
 	} else {
 		*online = TRUE;
@@ -114,6 +117,7 @@ gtasks_write_task_to_component (ECalComponent *comp, GDataTasksTask *task) {
 	ECalComponentText desc;
 	ECalComponentText summary;
 	const gchar *notes;
+	gint seq_id;
 
 	/* Description */
 	notes = gdata_tasks_task_get_notes (task);
@@ -154,7 +158,7 @@ gtasks_write_task_to_component (ECalComponent *comp, GDataTasksTask *task) {
 	}
 
 	/* FIXME Sequence problem as we creating ECalComponent on the fly */
-	gint seq_id = 1;
+	seq_id = 1;
 	e_cal_component_set_sequence (comp, &seq_id);
 }
 
@@ -832,13 +836,13 @@ gtasks_create_objects (ECalBackendSync *backend,
                   GSList **new_components,
                   GError **error)
 {
-	ECalBackendGTasks cbgtasks;
+	ECalBackendGTasks *cbgtasks;
 	GError *local_error = NULL;
 	gboolean online;
 	ECalComponent *comp;
 	GDataTasksTask *new_task;
 	GSList *desc_list = NULL;
-	struct ECalComponentText *summary = NULL;
+	ECalComponentText summary;
 	struct icaltimetype *completed = NULL;
 	struct icaltimetype *due = NULL;
 	GDataTasksTask *returned_task = NULL;
@@ -866,11 +870,11 @@ gtasks_create_objects (ECalBackendSync *backend,
 	e_cal_component_free_text_list (desc_list);
 
 	/* Summary */
-	e_cal_component_get_summary (comp, summary);
-	gdata_entry_set_title (new_task, summary->value);
+	e_cal_component_get_summary (comp, &summary);
+	gdata_entry_set_title (GDATA_ENTRY (new_task), summary.value);
 
 	/* Completed */
-	e_cal_component_get_completed (comp, &completed);
+	e_cal_component_get_completed (comp, completed);
 
 	if (completed == NULL) {
 		gdata_tasks_task_set_completed (new_task, -1);
@@ -879,7 +883,7 @@ gtasks_create_objects (ECalBackendSync *backend,
 	}
 
 	/* Due */
-	e_cal_component_get_due (comp, &due);
+	e_cal_component_get_due (comp, due);
 
 	if (due == NULL) {
 		gdata_tasks_task_set_due (new_task, -1);
@@ -940,7 +944,7 @@ gtasks_modify_objects (ECalBackendSync *backend,
                   GSList **new_components,
                   GError **perror)
 {
-	ECalBackendGTasks cbgtasks;
+	ECalBackendGTasks *cbgtasks;
 	gchar *uid;
 	GDataTasksTask *task;
 	GList mod_obj = NULL;
@@ -980,7 +984,7 @@ gtasks_modify_objects (ECalBackendSync *backend,
 	}
 
 	/* let's get store object first */
-	mod_obj = e_cal_backend_store_get_components_by_uid (cbdav->priv->store, uid);
+	mod_obj = e_cal_backend_store_get_components_by_uid (cbgtasks->priv->store, uid);
 	mod_comp = (ECalComponent*)(mod_obj->data);
 	/* FIXME provide all changes */
 
@@ -999,7 +1003,7 @@ gtasks_remove_objects (ECalBackendSync *backend,
                   GSList **new_components,
                   GError **error)
 {
-	ECalBackendGTasks cbgtasks;
+	ECalBackendGTasks *cbgtasks;
 	gchar *uid;
 	GDataTasksTask *task;
 	GError *local_error = NULL;
@@ -1035,7 +1039,7 @@ gtasks_remove_objects (ECalBackendSync *backend,
 		return;
 	}
 
-	remove_success_store = e_cal_backend_store_remove_component (cbdav->priv->store, uid, rid);
+	remove_success_store = e_cal_backend_store_remove_component (cbgtasks->priv->store, uid, rid);
 
 	if (remove_success_store == FALSE) {
 		g_propagate_error (error, EDC_ERROR (ObjectNotFound));
