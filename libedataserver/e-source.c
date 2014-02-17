@@ -98,6 +98,7 @@
 #include "e-source-selectable.h"
 #include "e-source-smime.h"
 #include "e-source-uoa.h"
+#include "e-source-tasklist-id.h"
 #include "e-source-webdav.h"
 
 #define E_SOURCE_GET_PRIVATE(obj) \

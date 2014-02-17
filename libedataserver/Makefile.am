@@ -83,6 +83,7 @@ libedataserver_1_2_la_SOURCES =		\
 	e-source-selectable.c		\
 	e-source-smime.c		\
 	e-source-uoa.c			\
+	e-source-tasklist-id.c	\
 	e-source-webdav.c		\
 	e-debug-log.c			\
 	e-time-utils.c			\
@@ -157,6 +158,7 @@ libedataserverinclude_HEADERS =		\
 	e-source-selectable.h		\
 	e-source-smime.h		\
 	e-source-uoa.h			\
+	e-source-tasklist-id.h	\
 	e-source-webdav.h		\
 	e-debug-log.h			\
 	e-time-utils.h			\
