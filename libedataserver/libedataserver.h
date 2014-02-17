@@ -67,6 +67,7 @@
 #include <libedataserver/e-source-uoa.h>
 #include <libedataserver/e-source-webdav.h>
 #include <libedataserver/e-source.h>
+#include <libedataserver/e-source-tasklist-id.h>
 #include <libedataserver/e-time-utils.h>
 #include <libedataserver/e-uid.h>
 #include <libedataserver/e-url.h>
