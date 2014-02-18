@@ -843,11 +843,16 @@ gtasks_create_objects (ECalBackendSync *backend,
 	GDataTasksTask *new_task;
 	GSList *desc_list = NULL;
 	ECalComponentText summary;
-	struct icaltimetype *completed = NULL;
-	struct icaltimetype *due = NULL;
+	struct icaltimetype *completed;
+	ECalComponentDateTime *due_time;
+	struct icaltimetype *due;
 	GDataTasksTask *returned_task = NULL;
 	icalproperty_status status;
+	struct icaltimetype current;
 	const gchar *in_calobj = in_calobjs->data;
+	const gchar *new_id;
+	ECalComponent *check_comp;
+	const gchar *rid = "1";
 
 	cbgtasks = E_CAL_BACKEND_GTASKS (backend);
 
@@ -874,7 +879,7 @@ gtasks_create_objects (ECalBackendSync *backend,
 	gdata_entry_set_title (GDATA_ENTRY (new_task), summary.value);
 
 	/* Completed */
-	e_cal_component_get_completed (comp, completed);
+	e_cal_component_get_completed (comp, &completed);
 
 	if (completed == NULL) {
 		gdata_tasks_task_set_completed (new_task, -1);
@@ -883,19 +888,25 @@ gtasks_create_objects (ECalBackendSync *backend,
 	}
 
 	/* Due */
-	e_cal_component_get_due (comp, due);
+	e_cal_component_get_due (comp, due_time);
+	due = due_time->value;
+	// FIXME timezone info? due_time->tzid
+	// FIXME due and completed must be const to convert from icaltime to timet
+	// icaltime_as_timet_with_zone (*due, icaltimezone_get_builtin_timezone_from_tzid (due_time->tzid))
+	//
 
 	if (due == NULL) {
 		gdata_tasks_task_set_due (new_task, -1);
 	} else {
-		gdata_tasks_task_set_due (new_task, (gint64) icaltime_as_timet (*due));
+		//gdata_tasks_task_set_due (new_task, (gint64) icaltime_as_timet (*due));
+		gdata_tasks_task_set_due (new_task, (gint64) icaltime_as_timet_with_zone (*due, icaltimezone_get_builtin_timezone_from_tzid (due_time->tzid)));
 	}
 
 	/* Status */
 	e_cal_component_get_status (comp, &status);
-	if (g_str_equal (status, ICAL_STATUS_COMPLETED)) {
+	if (status == ICAL_STATUS_COMPLETED) {
 		gdata_tasks_task_set_status (new_task, "completed");
-	} else if (g_str_equal (status, ICAL_STATUS_NEEDSACTION)) {
+	} else if (status == ICAL_STATUS_NEEDSACTION) {
 		gdata_tasks_task_set_status (new_task, "needsAction");
 	}
 
@@ -903,8 +914,8 @@ gtasks_create_objects (ECalBackendSync *backend,
 	current = icaltime_current_time_with_zone (icaltimezone_get_utc_timezone ());
 	e_cal_component_set_created (comp, &current);
 	e_cal_component_set_last_modified (comp, &current);
-
-	returned_task = gdata_tasks_service_insert_task (service, task, cancellable, &local_error);
+	// FIXME better create tasklist object when initialise
+	returned_task = gdata_tasks_service_insert_task (GDATA_TASKS_SERVICE (cbgtasks->priv->service), new_task, gdata_tasks_tasklist_new (cbgtasks->priv->tasklist_id), cancellable, &local_error);
 
 	if (returned_task == NULL) {
 		if (local_error->domain == GDATA_SERVICE_ERROR && local_error->domain == GDATA_SERVICE_ERROR_ENTRY_ALREADY_INSERTED) {
@@ -917,13 +928,13 @@ gtasks_create_objects (ECalBackendSync *backend,
 		return;
 	}
 
-	const gchar *new_id = gdata_entry_get_id (GDATA_ENTRY (returned_task));
+	new_id = gdata_entry_get_id (GDATA_ENTRY (returned_task));
 	e_cal_component_set_uid (comp, new_id);
 
 	/* check the object is not in our cache already */
-	check_comp = e_cal_backend_store_get_component (cbgtasks->priv->store, uid, rid);
+	check_comp = e_cal_backend_store_get_component (cbgtasks->priv->store, new_id, rid);
 	if (check_comp != NULL) {
-		g_propagate_error (error, EDC_ERROR (ObjectIdAlreadyExists)));
+		g_propagate_error (error, EDC_ERROR (ObjectIdAlreadyExists));
 		g_object_unref (check_comp);
 		return;
 	}
@@ -947,37 +958,43 @@ gtasks_modify_objects (ECalBackendSync *backend,
 	ECalBackendGTasks *cbgtasks;
 	gchar *uid;
 	GDataTasksTask *task;
-	GList mod_obj = NULL;
+	GList *mod_obj = NULL;
 	ECalComponent *mod_comp = NULL;
 	GError *local_error = NULL;
-	gint rid = 1;
-	gboolean update_success = update_success_store = FALSE;
-	const gchar *calobj = in_calobjs->data;
+	const gchar *rid = "1";
+	GDataTasksTask *updated_task;
+	gboolean update_success_store = FALSE;
+	const gchar *calobj = calobjs->data;
+	gboolean online = FALSE;
 
 	cbgtasks = E_CAL_BACKEND_GTASKS (backend);
 
 	if (new_components)
 		*new_components = NULL;
 
-	if (!check_state (cbgtasks, &online, error))
+	if (!check_state (cbgtasks, &online, perror))
 		return;
 
 	/* We make the assumption that the calobjs list we're passed is always exactly one element long, since we haven't specified "bulk-modifies"
 	 * in our static capability list. This simplifies a lot of the logic, especially around asynchronous results. */
-	if (in_calobjs->next != NULL) {
-		g_propagate_error (error, e_data_cal_create_error (UnsupportedMethod, _("Google Tasks does not support bulk modifications")));
+	if (calobjs->next != NULL) {
+		g_propagate_error (perror, e_data_cal_create_error (UnsupportedMethod, _("Google Tasks does not support bulk modifications")));
 		return;
 	}
 
 	/* Taking one object */
-	uid = ((ECalComponentId *) uids->data)->uid;
+	uid = ((ECalComponentId *) calobjs->data)->uid;
 	task = gdata_tasks_task_new (uid);
 	/* collect all info and update task - FIXME this can cause problem if you want to compare */
-	update_successs = gdata_tasks_service_update_task (cbgtasks->priv->service, task, NULL, &local_error);
 
-	if (update_successs == FALSE) {
+	ECalComponent *updated_comp = e_cal_component_new_from_string (calobj);
+
+
+	updated_task = gdata_tasks_service_update_task (GDATA_TASKS_SERVICE (cbgtasks->priv->service), task, cancellable, &local_error);
+
+	if (updated_task == NULL) {
 		/* FIXME should we do our own error thing in case when you can't delete */
-		g_propagate_error (error, e_data_cal_create_error (UnsupportedMethod, _("Can't remove task from Google Tasks.")));
+		g_propagate_error (perror, e_data_cal_create_error (UnsupportedMethod, _("Can't update task in Google Tasks service.")));
 		g_free (uid);
 		g_object_unref (task);
 		return;
@@ -988,7 +1005,6 @@ gtasks_modify_objects (ECalBackendSync *backend,
 	mod_comp = (ECalComponent*)(mod_obj->data);
 	/* FIXME provide all changes */
 
-	uids = uids->next;
 	g_free (uid);
 
 }
@@ -1007,8 +1023,9 @@ gtasks_remove_objects (ECalBackendSync *backend,
 	gchar *uid;
 	GDataTasksTask *task;
 	GError *local_error = NULL;
-	gint rid = 1;
-	gboolean remove_success = remove_success_store = FALSE;
+	const gchar *rid = "1";
+	gboolean remove_success = FALSE;
+	gboolean remove_success_store = FALSE;
 	gboolean online;
 
 	cbgtasks = E_CAL_BACKEND_GTASKS (backend);
@@ -1021,13 +1038,13 @@ gtasks_remove_objects (ECalBackendSync *backend,
 
 	/* We make the assumption that the calobjs list we're passed is always exactly one element long, since we haven't specified "bulk-modifies"
 	 * in our static capability list. This simplifies a lot of the logic, especially around asynchronous results. */
-	if (in_calobjs->next != NULL) {
+	if (ids->next != NULL) {
 		g_propagate_error (error, e_data_cal_create_error (UnsupportedMethod, _("Google Tasks does not support bulk removals")));
 		return;
 	}
 
 	/* Taking one object */
-	uid = ((ECalComponentId *) uids->data)->uid;
+	uid = ((ECalComponentId *) ids->data)->uid;
 
 	task = gdata_tasks_task_new (uid);
 	remove_success = gdata_tasks_service_delete_task (cbgtasks->priv->service, task, NULL, &local_error);
