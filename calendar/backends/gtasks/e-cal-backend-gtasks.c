@@ -119,6 +119,10 @@ gtasks_write_task_to_component (ECalComponent *comp, GDataTasksTask *task) {
 	const gchar *notes;
 	gint seq_id;
 
+	// Unix epoch is in UTC timezone
+	icaltimezone *utc_zone;
+	utc_zone = icaltimezone_get_utc_timezone ();
+
 	/* Description */
 	notes = gdata_tasks_task_get_notes (task);
 	if (notes != NULL) {
@@ -134,7 +138,7 @@ gtasks_write_task_to_component (ECalComponent *comp, GDataTasksTask *task) {
 	/* Completed */
 	if (gdata_tasks_task_get_completed (task) != -1) {
 		struct icaltimetype completed_time, *ct;
-		completed_time = icaltime_from_timet_with_zone (gdata_tasks_task_get_completed (task), 1, 0);
+		completed_time = icaltime_from_timet_with_zone (gdata_tasks_task_get_completed (task), 1, utc_zone);
 		ct = &completed_time;
 		e_cal_component_set_completed (comp, ct);
 	}
@@ -142,7 +146,7 @@ gtasks_write_task_to_component (ECalComponent *comp, GDataTasksTask *task) {
 	if (gdata_tasks_task_get_due (task) != -1) {
 		ECalComponentDateTime due_time, *dt;
 		struct icaltimetype tt;
-		tt = icaltime_from_timet_with_zone (gdata_tasks_task_get_due (task), 1, 0);
+		tt = icaltime_from_timet_with_zone (gdata_tasks_task_get_due (task), 1, utc_zone);
 		due_time.tzid = NULL;
 		due_time.value = &tt;
 		dt = &due_time;
@@ -633,6 +637,8 @@ gtasks_do_open (ECalBackendSync *backend,
 	ECalBackendGTasks *cbgtasks;
 	gboolean online;
 	GError *local_error = NULL;
+	ETimezoneCache *timezone_cache;
+	icaltimezone *utc_zone;
 
 	cbgtasks = E_CAL_BACKEND_GTASKS (backend);
 
@@ -641,6 +647,14 @@ gtasks_do_open (ECalBackendSync *backend,
 		return;
 
 	online = e_backend_get_online (E_BACKEND (backend));
+
+	/* Add UTC zone to timezone cache, as anything coming from libgdata is unix epoch */
+
+	utc_zone = icaltimezone_get_utc_timezone ();
+	timezone_cache = E_TIMEZONE_CACHE (cbdav);	
+	e_timezone_cache_add_timezone (timezone_cache, utc_zone);
+
+	icaltimezone_free (utc_zone, TRUE);
 
 	/* Set to ready only for now*/
 	e_cal_backend_set_writable (E_CAL_BACKEND (cbgtasks), FALSE);
@@ -884,7 +898,7 @@ gtasks_create_objects (ECalBackendSync *backend,
 	if (completed == NULL) {
 		gdata_tasks_task_set_completed (new_task, -1);
 	} else {
-		gdata_tasks_task_set_completed (new_task, (gint64) icaltime_as_timet (*completed));
+		gdata_tasks_task_set_completed (new_task, (gint64) icaltime_as_timet_with_zone (*completed, icaltime_get_timezone (*completed)));
 	}
 
 	/* Due */
@@ -893,7 +907,7 @@ gtasks_create_objects (ECalBackendSync *backend,
 	// FIXME timezone info? due_time->tzid
 	// FIXME due and completed must be const to convert from icaltime to timet
 	// icaltime_as_timet_with_zone (*due, icaltimezone_get_builtin_timezone_from_tzid (due_time->tzid))
-	//
+	// FIXME ok, we get completed and due timezones. How to add them to TimezoneCache?
 
 	if (due == NULL) {
 		gdata_tasks_task_set_due (new_task, -1);
